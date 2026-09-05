@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>灯火の国盗り ～ブラウザ国盗りCGI風～</title>
+<!-- ドット絵風フォント「DotGothic16」（任意）。不要な場合はこの2行を削除すればMS PGothic系にフォールバックします -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="Style.css">
+</head>
+<body>
+
+<div class="ticker"><span id="tickerText">◆本ゲームは1990～2000年代に流行した個人運営レンタルCGIゲームの雰囲気を再現した非公式オマージュです◆20秒ごとに1回行動できます◆サーバに負担をかけないよう、のんびり運営中◆</span></div>
+
+<div class="wrap">
+  <div class="titlebox">
+    <h1>🏯 灯火の国盗り <span class="blink" style="font-size:11px;color:#ffd76b;">NEW</span></h1>
+    <div class="sub">－ 無料きどりの個人運営ブラウザゲーム（CGI風・非公式トリビュート）－</div>
+  </div>
+
+  <div class="counter-row">
+    あなたは <span class="lcd" id="visitorCount">------</span> 人目の訪問者です
+  </div>
+
+  <div id="app"><div class="loading">読み込み中…</div></div>
+
+  <footer>
+    ◇このサイトはリンクフリーです◇無断転載はご遠慮ください◇<br>
+    Since <span id="sinceYear">----</span>／ Produced by 名もなき管理人<br>
+    <span id="localModeNote"></span>
+    <a href="#" id="toTopLink">▲ページの先頭へ</a>
+  </footer>
+</div>
+
+<script src="Script.js"></script>
+</body>
+</html>
