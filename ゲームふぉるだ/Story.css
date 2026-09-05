@@ -1,0 +1,432 @@
+:root, html[data-theme="dark"]{
+  --paper:#f1e9d8;        /* 本文の文字色（暗背景に映える生成り色） */
+  --ink-faint:#a89b85;    /* 補足テキスト。暗背景でも読めるよう明るめに調整 */
+  --seal:#7a2228;
+  --seal-light:#9c3339;
+  --gold:#a6893f;
+  --gold-bright:#d4b25c;
+  --void:#14110f;
+  --void-panel:#1e1a16;
+  --line:#544a3a;
+  --locked:#3f392f;
+  --locked-text:#8c8168;
+  --err:#e08a7d;
+  --ok:#a8c98a;
+}
+
+html[data-theme="light"]{
+  --paper:#2a2420;        /* 本文の文字色（明背景では濃い墨色） */
+  --ink-faint:#5c5347;
+  --seal:#7a2228;
+  --seal-light:#9c3339;
+  --gold:#7a611f;
+  --gold-bright:#5e4a17;
+  --void:#f4ecdb;
+  --void-panel:#ffffff;
+  --line:#c9bda3;
+  --locked:#d8cdb4;
+  --locked-text:#8a7f68;
+  --err:#a33f34;
+  --ok:#3f6b2c;
+}
+
+:root{
+  --fs-scale:1;
+  --font-serif:"Shippori Mincho","Yu Mincho","Hiragino Mincho ProN",serif;
+  --font-cipher:"Courier New",monospace;
+}
+html[data-fontsize="sm"]{ --fs-scale:0.88; }
+html[data-fontsize="md"]{ --fs-scale:1; }
+html[data-fontsize="lg"]{ --fs-scale:1.18; }
+html[data-fontsize="xl"]{ --fs-scale:1.38; }
+
+*{ box-sizing:border-box; }
+
+html,body{
+  margin:0; padding:0;
+  min-height:100%;
+  background-color:var(--void);
+  background-image:
+    radial-gradient(ellipse at 50% -10%, rgba(140,114,55,.08), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(0,0,0,.06) 0 1px, transparent 1px 3px);
+  color:var(--paper);
+  font-family:var(--font-serif);
+  line-height:1.9;
+  transition:background-color .2s ease, color .2s ease;
+}
+
+a{ color:inherit; }
+
+/* ---------- 全体レイアウト ---------- */
+.story-wrap{
+  max-width:560px;
+  margin:0 auto;
+  padding:0 0 60px;
+  min-height:100vh;
+}
+
+/* ---------- ヘッダー：書庫の扉 ---------- */
+.story-header{
+  position:relative;
+  padding:38px 24px 30px;
+  text-align:center;
+  border-bottom:1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(0,0,0,.12), transparent 70%);
+}
+.story-header .back-link{
+  position:absolute;
+  top:16px; left:16px;
+  font-size:calc(11px * var(--fs-scale));
+  letter-spacing:.1em;
+  color:var(--ink-faint);
+  text-decoration:none;
+  border:1px solid var(--line);
+  padding:5px 10px;
+  opacity:.9;
+}
+.story-header .back-link:hover{ opacity:1; border-color:var(--gold); }
+
+/* 設定バー（テーマ・文字サイズ） */
+.settings-bar{
+  position:absolute;
+  top:16px; right:16px;
+  display:flex;
+  gap:6px;
+  align-items:center;
+}
+.seg-group{
+  display:flex;
+  border:1px solid var(--line);
+  overflow:hidden;
+}
+.seg-group button{
+  background:var(--void-panel);
+  border:none;
+  border-left:1px solid var(--line);
+  color:var(--ink-faint);
+  font-family:var(--font-cipher);
+  font-size:11px;
+  padding:6px 8px;
+  cursor:pointer;
+  line-height:1;
+}
+.seg-group button:first-child{ border-left:none; }
+.seg-group button:hover{ color:var(--gold-bright); }
+.seg-group button.active{
+  background:var(--gold);
+  color:var(--void);
+  font-weight:bold;
+}
+.theme-toggle-btn{
+  background:var(--void-panel);
+  border:1px solid var(--line);
+  color:var(--paper);
+  font-size:13px;
+  width:30px; height:30px;
+  cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.theme-toggle-btn:hover{ border-color:var(--gold); }
+
+.story-eyebrow{
+  font-family:var(--font-cipher);
+  font-size:calc(11px * var(--fs-scale));
+  letter-spacing:.35em;
+  color:var(--gold);
+  margin-bottom:14px;
+  margin-top:28px;
+}
+.story-title{
+  font-size:calc(26px * var(--fs-scale));
+  letter-spacing:.12em;
+  color:var(--paper);
+  margin:0 0 10px;
+  font-weight:600;
+}
+.story-desc{
+  font-size:calc(12px * var(--fs-scale));
+  color:var(--ink-faint);
+  max-width:380px;
+  margin:0 auto;
+  letter-spacing:.03em;
+}
+
+/* ---------- Act 区切り ---------- */
+.act-block{ margin:0; }
+.act-head{
+  display:flex;
+  align-items:baseline;
+  gap:14px;
+  padding:26px 24px 10px;
+  border-bottom:1px solid var(--line);
+}
+.act-num{
+  font-family:var(--font-cipher);
+  font-size:calc(13px * var(--fs-scale));
+  color:var(--gold-bright);
+  letter-spacing:.15em;
+  white-space:nowrap;
+}
+.act-title{
+  font-size:calc(17px * var(--fs-scale));
+  letter-spacing:.08em;
+  color:var(--paper);
+}
+.act-sub{
+  padding:0 24px 18px;
+  font-size:calc(12px * var(--fs-scale));
+  color:var(--ink-faint);
+  line-height:1.85;
+  border-bottom:1px solid var(--line);
+}
+
+/* ---------- 章カード（巻物） ---------- */
+.chapter-list{ padding:14px 16px 6px; }
+
+.chapter{
+  position:relative;
+  margin:14px 0;
+  border:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(128,110,80,.05), transparent);
+}
+.chapter.locked{
+  border-color:var(--locked);
+  opacity:.9;
+}
+
+.chapter-row{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  padding:16px 16px;
+  cursor:pointer;
+  text-decoration:none;
+  color:inherit;
+}
+.chapter.locked .chapter-row{ cursor:default; }
+
+.chapter-seal{
+  flex:0 0 auto;
+  width:34px; height:34px;
+  border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-family:var(--font-cipher);
+  font-size:11px;
+  border:1px solid var(--gold);
+  color:var(--gold-bright);
+}
+.chapter.locked .chapter-seal{
+  border-color:var(--locked);
+  color:var(--locked-text);
+  background:
+    repeating-linear-gradient(45deg, var(--void-panel) 0 3px, var(--locked) 3px 6px);
+}
+.chapter.read .chapter-seal{
+  background:var(--seal);
+  border-color:var(--seal-light);
+  color:#f5ece0;
+}
+
+.chapter-body{ flex:1 1 auto; min-width:0; }
+.chapter-name{
+  font-size:calc(14px * var(--fs-scale));
+  letter-spacing:.06em;
+  color:var(--paper);
+  margin-bottom:4px;
+}
+.chapter.locked .chapter-name{ color:var(--locked-text); }
+
+.chapter-meta{
+  font-size:calc(11px * var(--fs-scale));
+  color:var(--ink-faint);
+  letter-spacing:.02em;
+}
+.chapter.locked .chapter-meta{
+  font-family:var(--font-cipher);
+  color:var(--locked-text);
+}
+
+.chapter-arrow{
+  flex:0 0 auto;
+  font-size:14px;
+  color:var(--gold);
+  opacity:.8;
+}
+.chapter.locked .chapter-arrow{ display:none; }
+
+/* 未解放：条件入力トリガー */
+.unlock-trigger{
+  display:block;
+  width:100%;
+  background:none;
+  border:none;
+  border-top:1px dashed var(--locked);
+  padding:10px 16px;
+  font-family:var(--font-cipher);
+  font-size:calc(11px * var(--fs-scale));
+  color:var(--locked-text);
+  text-align:left;
+  cursor:pointer;
+  letter-spacing:.05em;
+}
+.unlock-trigger:hover{ color:var(--gold-bright); border-top-color:var(--gold); }
+
+/* ---------- 節を読むビュー ---------- */
+.reader{ padding:8px 22px 10px; }
+
+.reader-nav{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:20px;
+  font-size:11px;
+}
+.reader-nav .close-reader{
+  background:none; border:1px solid var(--line);
+  color:var(--ink-faint);
+  padding:6px 12px;
+  cursor:pointer;
+  font-family:var(--font-serif);
+  font-size:calc(12px * var(--fs-scale));
+  letter-spacing:.05em;
+}
+.reader-nav .close-reader:hover{ border-color:var(--gold); color:var(--gold-bright); }
+.reader-nav .reader-pos{
+  font-family:var(--font-cipher);
+  font-size:calc(11px * var(--fs-scale));
+  color:var(--ink-faint);
+  letter-spacing:.1em;
+}
+
+.reader-chapter-title{
+  font-size:calc(19px * var(--fs-scale));
+  letter-spacing:.08em;
+  margin-bottom:6px;
+  color:var(--paper);
+}
+.reader-chapter-sub{
+  font-size:calc(11px * var(--fs-scale));
+  color:var(--gold-bright);
+  margin-bottom:26px;
+  letter-spacing:.1em;
+}
+
+.section-block{
+  font-size:calc(15px * var(--fs-scale));
+  color:var(--paper);
+  margin-bottom:2em;
+  letter-spacing:.02em;
+}
+.section-block p{ margin:0 0 1.2em; }
+.section-block .section-num{
+  display:block;
+  font-family:var(--font-cipher);
+  font-size:calc(10px * var(--fs-scale));
+  color:var(--ink-faint);
+  letter-spacing:.2em;
+  margin-bottom:.8em;
+}
+
+.reader-footer{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  margin-top:34px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+}
+.reader-footer button{
+  flex:1;
+  background:var(--void-panel);
+  border:1px solid var(--line);
+  color:var(--paper);
+  padding:12px 10px;
+  font-family:var(--font-serif);
+  font-size:calc(12.5px * var(--fs-scale));
+  letter-spacing:.06em;
+  cursor:pointer;
+}
+.reader-footer button:hover:not(:disabled){ border-color:var(--gold); color:var(--gold-bright); }
+.reader-footer button:disabled{ opacity:.35; cursor:default; }
+
+/* ---------- 解放モーダル ---------- */
+.modal-overlay{
+  position:fixed; inset:0;
+  background:rgba(10,8,6,.72);
+  display:flex; align-items:center; justify-content:center;
+  padding:18px; z-index:1000;
+}
+.unlock-box{
+  background:var(--void-panel);
+  border:1px solid var(--gold);
+  max-width:340px; width:100%;
+  padding:24px 20px;
+}
+.unlock-box h3{
+  margin:0 0 14px;
+  font-size:calc(14px * var(--fs-scale));
+  letter-spacing:.1em;
+  color:var(--gold-bright);
+  font-weight:600;
+}
+.unlock-box p.hint{
+  font-size:calc(11.5px * var(--fs-scale));
+  color:var(--ink-faint);
+  line-height:1.8;
+  margin:0 0 16px;
+}
+.unlock-box input[type=text]{
+  width:100%;
+  font-family:var(--font-cipher);
+  font-size:14px;
+  padding:10px;
+  background:var(--void);
+  border:1px solid var(--line);
+  color:var(--paper);
+  margin-bottom:12px;
+  letter-spacing:.08em;
+}
+.unlock-box input[type=text]:focus{ outline:none; border-color:var(--gold); }
+.unlock-actions{ display:flex; gap:8px; }
+.unlock-actions button{
+  flex:1;
+  padding:10px;
+  font-family:var(--font-serif);
+  font-size:calc(12.5px * var(--fs-scale));
+  letter-spacing:.05em;
+  cursor:pointer;
+  border:1px solid var(--line);
+  background:none;
+  color:var(--paper);
+}
+.unlock-actions button.primary{ border-color:var(--gold); color:var(--gold-bright); }
+.unlock-actions button:hover{ border-color:var(--gold); }
+.unlock-msg{
+  font-size:calc(11px * var(--fs-scale));
+  margin-top:10px;
+  min-height:1.4em;
+  letter-spacing:.03em;
+}
+.unlock-msg.err{ color:var(--err); }
+.unlock-msg.ok{ color:var(--ok); }
+
+.story-footer-note{
+  text-align:center;
+  font-size:calc(10px * var(--fs-scale));
+  color:var(--ink-faint);
+  letter-spacing:.08em;
+  padding:26px 20px 0;
+}
+
+@media (max-width:480px){
+  .story-header{ padding:30px 18px 24px; }
+  .story-title{ font-size:calc(22px * var(--fs-scale)); }
+  .settings-bar{ position:static; justify-content:center; margin-bottom:14px; }
+  .story-eyebrow{ margin-top:0; }
+  .act-head{ padding:22px 18px 8px; }
+  .act-sub{ padding:0 18px 16px; }
+  .chapter-list{ padding:12px 10px 4px; }
+  .chapter-row{ padding:14px 12px; }
+  .reader{ padding:18px 16px 6px; }
+}
