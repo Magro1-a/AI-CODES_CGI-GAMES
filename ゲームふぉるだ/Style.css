@@ -1,0 +1,306 @@
+  :root{
+    --navy:#1b3a6b;
+    --navy-dark:#122a4e;
+    --navy-light:#3f5f95;
+    --paper:#fdfdf5;
+    --ink:#222;
+    --line:#8fa8cc;
+    --btn:#d4d0c8;
+    --btn-dark:#8f8b83;
+    --btn-light:#fff;
+    --red:#b3261e;
+    --green:#116b2e;
+    --gold:#a8720a;
+    /* Webフォント「DotGothic16」（Google Fonts・ドット絵風）をオプションで先頭に指定。
+       index.html側の<link>タグを外せば、自動的にMS PGothic系にフォールバックする。 */
+    --font-base:"DotGothic16","MS PGothic","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0;
+    background-color:#bfe0ff;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 2px, transparent 2px 26px),
+      linear-gradient(180deg,#cfe9ff,#a9d2f5);
+    font-family:var(--font-base);
+    color:var(--ink);
+    font-size:14px;
+  }
+  a{ color:#0000EE; }
+
+  .ticker{
+    background:var(--navy-dark);
+    color:#ffd76b;
+    overflow:hidden;
+    white-space:nowrap;
+    padding:4px 0;
+    font-size:12px;
+    border-bottom:2px solid var(--navy);
+  }
+  .ticker span{
+    display:inline-block;
+    padding-left:100%;
+    animation:scroll 18s linear infinite;
+  }
+  @keyframes scroll{ from{transform:translateX(0);} to{transform:translateX(-100%);} }
+  @media (prefers-reduced-motion: reduce){ .ticker span{ animation:none; padding-left:2%; } }
+
+  .wrap{ max-width:520px; margin:0 auto; padding:10px 10px 30px; }
+
+  .titlebox{
+    background:var(--navy);
+    border:3px outset var(--navy-light);
+    padding:12px 10px;
+    text-align:center;
+    margin-bottom:8px;
+  }
+  .titlebox h1{
+    margin:0;
+    color:#fff;
+    font-size:22px;
+    letter-spacing:.06em;
+    text-shadow:1px 1px 0 #0a1c38, 2px 2px 0 rgba(0,0,0,.4);
+  }
+  .titlebox .sub{
+    color:#bcd0f2;
+    font-size:11px;
+    margin-top:4px;
+    letter-spacing:.04em;
+  }
+
+  .counter-row{
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:6px;
+    margin:8px 0 12px;
+    font-size:11px;
+    color:#134;
+  }
+  .lcd{
+    background:#111;
+    color:#ffb703;
+    font-family:"Consolas",monospace;
+    letter-spacing:3px;
+    padding:3px 8px;
+    border:2px inset #444;
+    font-size:13px;
+  }
+
+  .panel{
+    background:var(--paper);
+    border:2px solid var(--navy);
+    box-shadow:2px 2px 0 rgba(0,0,0,.15);
+    margin-bottom:12px;
+  }
+  .panel-head{
+    background:linear-gradient(180deg,#e7edf7,#cfd9ec);
+    border-bottom:2px solid var(--navy);
+    padding:5px 10px;
+    font-weight:bold;
+    font-size:13px;
+    color:var(--navy-dark);
+    cursor:pointer;
+    user-select:none;
+  }
+  .panel-head:hover{ background:linear-gradient(180deg,#eef2fa,#dae3f3); }
+  .panel.collapsed .panel-head{ border-bottom:none; }
+  .panel.collapsed .panel-body{ display:none; }
+  .panel-body{ padding:10px; }
+
+  table.stats{ width:100%; border-collapse:collapse; font-size:13px; }
+  table.stats td{ padding:5px 6px; border-bottom:1px dotted var(--line); }
+  table.stats tr:last-child td{ border-bottom:none; }
+  table.stats td.k{ color:#456; width:40%; }
+  table.stats td.v{ font-weight:bold; text-align:right; }
+
+  .title-badge{
+    display:inline-block;
+    font-size:10px;
+    font-weight:normal;
+    color:var(--navy-dark);
+    background:#e7edf7;
+    border:1px solid var(--navy-light);
+    border-radius:3px;
+    padding:1px 5px;
+    margin-left:4px;
+    vertical-align:middle;
+  }
+
+  .retro-btn{
+    font-family:inherit;
+    font-size:13px;
+    background:var(--btn);
+    border:2px outset var(--btn-light);
+    padding:7px 4px;
+    cursor:pointer;
+    width:100%;
+    color:var(--ink);
+  }
+  .retro-btn:active{ border-style:inset; }
+  .retro-btn:disabled{
+    color:#999;
+    cursor:default;
+    background:#e4e2dc;
+    border-style:outset;
+    opacity:.75;
+  }
+  .action-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:6px;
+  }
+
+  .msgbox{
+    border:1px dashed var(--line);
+    background:#f2f6ff;
+    padding:8px 10px;
+    font-size:12px;
+    line-height:1.7;
+    color:#345;
+  }
+
+  .loglist{ font-size:12px; line-height:1.9; }
+  .loglist .row{ border-bottom:1px dotted var(--line); padding:3px 0; }
+  .loglist .row:last-child{ border-bottom:none; }
+  .loglist .date{ color:#789; margin-right:6px; }
+  .g{ color:var(--green); }
+  .r{ color:var(--red); }
+
+  table.rank{ width:100%; border-collapse:collapse; font-size:12px; }
+  table.rank th{
+    background:#e7edf7; border-bottom:2px solid var(--navy);
+    padding:4px; text-align:left; font-size:11px; color:var(--navy-dark);
+  }
+  table.rank td{ padding:4px; border-bottom:1px solid #e3e3e3; }
+  table.rank tr.me{ background:#fff6cf; }
+  table.rank tr.top1 td.rk{ color:var(--gold); font-weight:bold; }
+
+  .foundform input[type=text]{
+    width:100%;
+    font-family:inherit;
+    font-size:14px;
+    padding:6px;
+    border:2px inset #999;
+    margin-bottom:8px;
+  }
+
+  select.retro-select{
+    width:100%;
+    font-family:inherit;
+    font-size:13px;
+    padding:6px;
+    border:2px inset #999;
+    margin-bottom:8px;
+    background:#fff;
+  }
+  select.retro-select:disabled{ color:#999; background:#eee; }
+
+  footer{
+    text-align:center;
+    font-size:10px;
+    color:#456;
+    margin-top:16px;
+    line-height:1.9;
+  }
+  .blink{ animation:blink 1.4s step-start infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+  @media (prefers-reduced-motion: reduce){ .blink{ animation:none; } }
+
+  .loading{ text-align:center; font-size:12px; color:#567; padding:14px; }
+
+  .btn-inline{ width:auto !important; padding:6px 14px !important; }
+  .row-between{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .home-bar{ display:flex; justify-content:flex-end; margin-bottom:6px; }
+  .account-row{ padding:6px 0; border-bottom:1px dotted var(--line); }
+  .account-row:last-child{ border-bottom:none; }
+  .account-row .forget-link{ font-size:11px; white-space:nowrap; }
+  .localnote{ color:var(--gold); }
+
+  /* ---------- 汎用モーダル（キリ番ダイアログ・世界地図で共用） ---------- */
+  .modal-overlay{
+    position:fixed; inset:0;
+    background:rgba(10,20,40,.55);
+    display:flex; align-items:center; justify-content:center;
+    padding:16px; z-index:1000;
+  }
+  .kiriban-box, .map-box{
+    background:var(--paper);
+    border:3px outset var(--navy-light);
+    box-shadow:3px 3px 0 rgba(0,0,0,.3);
+    max-width:320px; width:100%;
+    padding:18px 16px;
+    text-align:center;
+  }
+  .map-box{ max-width:360px; }
+  .kiriban-title{
+    color:var(--navy-dark);
+    font-weight:bold;
+    font-size:16px;
+    margin-bottom:8px;
+    animation:kiribanPulse 1s ease-in-out infinite;
+  }
+  @keyframes kiribanPulse{ 50%{ transform:scale(1.06); } }
+  @media (prefers-reduced-motion: reduce){ .kiriban-title{ animation:none; } }
+  .kiriban-num{
+    background:#111; color:#ffb703;
+    font-family:"Consolas",monospace;
+    letter-spacing:4px;
+    font-size:22px;
+    padding:6px 10px;
+    border:2px inset #444;
+    display:inline-block;
+    margin-bottom:10px;
+  }
+  .kiriban-sub{ font-size:12px; color:#345; line-height:1.7; margin-bottom:12px; }
+
+  /* ---------- 地図 ---------- */
+  /* 全体を縮小して1画面に収めるのではなく、マスを見やすい大きさにしたうえで
+     決まった大きさの窓の中をスワイプ／スクロールして見る形にする */
+  .map-scroll{
+    overflow:auto;
+    margin:6px 0;
+    max-height:260px;
+    border:1px solid var(--navy-light);
+    -webkit-overflow-scrolling:touch;
+    touch-action:pan-x pan-y;
+  }
+  .map-grid{
+    --map-cell:16px;
+    display:grid;
+    gap:1px;
+    background:var(--navy-light);
+    border:2px solid var(--navy);
+    width:max-content;
+  }
+  .map-cell{ width:var(--map-cell); height:var(--map-cell); background:#dce8f5; }
+  .map-cell.free{ cursor:pointer; }
+  .map-cell.free:hover{ outline:1px solid var(--gold); outline-offset:-1px; }
+  .map-cell.selected{ outline:2px solid var(--gold); outline-offset:-1px; }
+  .map-cell.buffer{
+    cursor:not-allowed;
+    background:repeating-linear-gradient(45deg,#f7cfcf,#f7cfcf 2px,#f2b9b9 2px,#f2b9b9 4px);
+  }
+  .map-cell.owned{ cursor:pointer; }
+  .map-cell.owned.capital{ box-shadow:inset 0 0 0 1px #fff; }
+  .map-cell.owned.self{ outline:2px solid var(--gold); outline-offset:-1px; }
+
+  /* ---------- モバイル向け調整 ---------- */
+  @media (max-width:480px){
+    html,body{ font-size:13px; }
+    .wrap{ padding:8px 6px 26px; }
+    .titlebox{ padding:10px 8px; }
+    .titlebox h1{ font-size:18px; }
+    .titlebox .sub{ font-size:10px; }
+    .action-grid{ gap:8px; }
+    .retro-btn{ padding:9px 4px; font-size:13px; }
+    table.stats td, table.rank td, table.rank th{ padding:6px 4px; }
+    table.rank{ font-size:11px; }
+    .title-badge{ font-size:9px; padding:1px 3px; }
+    /* iOSでフォーカス時に自動ズームされないよう16px以上を確保 */
+    .foundform input[type=text], select.retro-select{ font-size:16px; }
+    .kiriban-box{ padding:16px 12px; }
+    .kiriban-num{ font-size:19px; letter-spacing:3px; }
+    .map-box{ max-width:none; width:100%; padding:12px 8px; }
+    .map-scroll{ max-height:220px; }
+  }
