@@ -11,7 +11,7 @@
     --red:#b3261e;
     --green:#116b2e;
     --gold:#a8720a;
-    /* Webフォント「DotGothic16」（Google Fonts・ドット絵風）をオプションで先頭に指定。
+    /* Webフォント「DotGothic16」をオプションで先頭に指定。
        index.html側の<link>タグを外せば、自動的にMS PGothic系にフォールバックする。 */
     --font-base:"DotGothic16","MS PGothic","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
   }
@@ -219,7 +219,7 @@
   .account-row .forget-link{ font-size:11px; white-space:nowrap; }
   .localnote{ color:var(--gold); }
 
-  /* ---------- 汎用モーダル（キリ番ダイアログ・世界地図で共用） ---------- */
+  /* ---------- 汎用モーダル(キリ番ダイアログ・世界地図で共用) ---------- */
   .modal-overlay{
     position:fixed; inset:0;
     background:rgba(10,20,40,.55);
@@ -257,8 +257,7 @@
   .kiriban-sub{ font-size:12px; color:#345; line-height:1.7; margin-bottom:12px; }
 
   /* ---------- 地図 ---------- */
-  /* 全体を縮小して1画面に収めるのではなく、マスを見やすい大きさにしたうえで
-     決まった大きさの窓の中をスワイプ／スクロールして見る形にする */
+  /* 全体を縮小して1画面に収めるのではなく、マスを見やすい大きさにしたうえで決まった大きさの窓の中をスワイプ／スクロールして見る形にする */
   .map-scroll{
     overflow:auto;
     margin:6px 0;
@@ -299,7 +298,7 @@
     table.stats td, table.rank td, table.rank th{ padding:6px 4px; }
     table.rank{ font-size:11px; }
     .title-badge{ font-size:9px; padding:1px 3px; }
-    /* iOSでフォーカス時に自動ズームされないよう16px以上を確保 */
+    /* iOSでフォーカス時に自動ズームされないようにする */
     .foundform input[type=text], select.retro-select{ font-size:16px; }
     .kiriban-box{ padding:16px 12px; }
     .kiriban-num{ font-size:19px; letter-spacing:3px; }
