@@ -7,10 +7,8 @@
   let cooldownInterval = null;
 
   // パネル見出し（▼ ○○）をクリックすると、その下の中身を開閉できるようにする。
-  // appEl の中身は再描画のたびに丸ごと差し替わるので、appEl 自体にイベント委譲しておけば
-  // 個別のパネルを再生成するたびにリスナーを付け直す必要がない。
-  // さらに data-panel-id が付いているパネルは、開閉状態をこの端末のlocalStorageに覚えておき、
-  // 次回訪問時・再描画後も同じ開閉状態を復元する。
+  // appEl の中身は再描画のたびに丸ごと差し替わるので、appEl 自体にイベント委譲しておけば個別のパネルを再生成するたびにリスナーを付け直す必要がない。
+  // data-panel-id が付いているパネルは、開閉状態を次回訪問時・再描画後も同じ開閉状態を復元する。
   const PANEL_COLLAPSE_KEY = 'tokoku_panel_collapsed_v1';
   function getCollapsedPanelIds(){
     try{
@@ -49,7 +47,6 @@
   // appEl.innerHTML が丸ごと差し替わるたびに、覚えている開閉状態を自動で復元する
   new MutationObserver(()=> applyPanelCollapseState(appEl)).observe(appEl, { childList:true });
 
-  // ★バグ修正：フッターの「▲ページの先頭へ」がただのテキストでリンクとして機能していなかったため、
   // クリックで滑らかに先頭へ戻るようにする
   const toTopLink = document.getElementById('toTopLink');
   if(toTopLink){
@@ -59,14 +56,13 @@
     });
   }
 
-  const COOLDOWN_MS = 20 * 1000; // 行動のクールダウン：20秒に1回
-  const MAP_SIZE = 41;   // マップは 0～40 の 41×41マス
-  const BUFFER_DIST = 5; // 建国時、他国の領土からこの距離（マス）以内には建国できない
+  const COOLDOWN_MS = 20 * 1000; // 行動のクールダウン
+  const MAP_SIZE = 41;   // マップは0~41の41×41マス
+  const BUFFER_DIST = 5; // 建国時、他国の領土からこのマス以内には建国できない
   const ABANDON_MS = 14 * 24 * 60 * 60 * 1000; // 14日間行動が無いと「廃墟」となり、誰でも接収できる
   const LIST_CACHE_MS = 5 * 1000; // 国一覧（ランキング・地図用）を使い回す時間。自分の保存・削除時は即破棄
-  // ★B1：領土を国力に加算し、開拓による領土拡大に逓増コストを付ける。
+  // 領土を国力に加算し、開拓による領土拡大に逓増コストを付ける。
   //   開拓コスト = max(0, 領土数 - DEV_FREE_TILES) × DEV_COST_PER_TILE（資金）
-  //   例）領土1〜2マス：無料／3マス：1／5マス：3／10マス：8／20マス：18
   // TERRITORY_SCORE は Story.js の loadPlayerScore と同じ値にしておくこと（章の解放判定が食い違うため）。
   const TERRITORY_SCORE = 5;
   const DEV_FREE_TILES = 2;
@@ -75,11 +71,7 @@
   let deviceKiribanHit = false; // この端末でキリ番の瞬間に立ち会ったことがあるか（実績表示用）
 
   // ---------- storage adapter ----------
-  // Claudeのartifact環境ではwindow.storageが使えるが、
-  // .htmlファイルとしてローカルに保存してブラウザで直接開いた場合は
-  // window.storageが存在しないため、その場合はlocalStorageで代用する。
-  // （ローカルモードでは「全員共有」データもこの端末のブラウザ内だけの
-  // 保存になるため、他の人とは国データを共有できない点に注意）
+  //htmlファイルとしてローカルに保存してブラウザで直接開いた場合はwindow.storageが存在しないため、その場合はlocalStorageで代用する。（ローカルモードではデータもこの端末のブラウザ内だけの保存になるため、他の人とは国データを共有できない点に注意）
   let isLocalMode = false;
   const storage = (function(){
     if(window.storage && typeof window.storage.get === 'function'){
@@ -124,18 +116,13 @@
     };
   })();
 
-  // 建国時の国名に使えないNGワード（正規化して部分一致でチェック）。
-  // 必要に応じてここに単語を追加すれば判定対象を増やせます。
+  // 建国時の国名に使えないNGワード
+  // ここに単語を追加すれば判定対象を増やせます。
   const NG_WORDS = [
-    // 暴力・脅迫（漢字・ひらがな両方をチェック）
     '死ね','しね','殺す','ころす','殺害','爆破','テロ','自殺',
-    // 性的な内容
     'セックス','レイプ','ちんこ','まんこ','おっぱい','porn','sex','rape',
-    // 侮辱
     'カス','クズ',
-    // 英語の侮辱・不適切語
     'fuck','shit','bitch','asshole','cunt','dick',
-    // 運営・公式へのなりすまし対策
     '運営','管理人','スタッフ','admin','administrator','staff','公式','official'
   ];
 
@@ -145,7 +132,7 @@
   function score(v){ return v.population + v.military*3 + v.gold + (v.territory ? v.territory.length : 0) * TERRITORY_SCORE; }
   // 次に領土を1マス広げるのに必要な資金
   function devCost(v){ return Math.max(0, (v.territory ? v.territory.length : 0) - DEV_FREE_TILES) * DEV_COST_PER_TILE; }
-  // ★B2：侵攻で奪えるマス。首都マス以外からランダムに1つ（隣接は問わない）。奪えるマスが無ければ null。
+  // 侵攻で奪えるマス。首都マス以外からランダムに1つ（隣接は問わない）。奪えるマスが無ければ null。
   // 首都の判定は buildMapStatus と同じ（capital が無い古い記録は territory[0] を首都とみなす）。
   function pickCapturableTile(v){
     const terr = v.territory || [];
@@ -196,7 +183,7 @@
         if(isTileFree(x,y,allVillages,excludeId)) return {x,y};
       }
     }
-    return null; // 空き地がまったく無い（相当マスが埋まっている）場合
+    return null; // 相当マスが埋まっている場合
   }
 
   // 自国の領土に隣接する（面している）未所有マスの一覧
