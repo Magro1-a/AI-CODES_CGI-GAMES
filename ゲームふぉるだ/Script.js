@@ -1,7 +1,9 @@
 (function(){
   const appEl = document.getElementById('app');
   const visitorCountEl = document.getElementById('visitorCount');
-  let state = { village:null, allVillages:[] };
+  // busy: 行動処理中か／lastResult: 直近の行動結果（行動パネルの最上部に表示）／
+  // pendingRetry: 保存に失敗したときの「もう一度保存する」で再開する処理
+  let state = { village:null, allVillages:[], busy:false, lastResult:null, pendingRetry:null };
   let cooldownInterval = null;
 
   // パネル見出し（▼ ○○）をクリックすると、その下の中身を開閉できるようにする。
@@ -61,6 +63,14 @@
   const MAP_SIZE = 41;   // マップは 0～40 の 41×41マス
   const BUFFER_DIST = 5; // 建国時、他国の領土からこの距離（マス）以内には建国できない
   const ABANDON_MS = 14 * 24 * 60 * 60 * 1000; // 14日間行動が無いと「廃墟」となり、誰でも接収できる
+  const LIST_CACHE_MS = 5 * 1000; // 国一覧（ランキング・地図用）を使い回す時間。自分の保存・削除時は即破棄
+  // ★B1：領土を国力に加算し、開拓による領土拡大に逓増コストを付ける。
+  //   開拓コスト = max(0, 領土数 - DEV_FREE_TILES) × DEV_COST_PER_TILE（資金）
+  //   例）領土1〜2マス：無料／3マス：1／5マス：3／10マス：8／20マス：18
+  // TERRITORY_SCORE は Story.js の loadPlayerScore と同じ値にしておくこと（章の解放判定が食い違うため）。
+  const TERRITORY_SCORE = 5;
+  const DEV_FREE_TILES = 2;
+  const DEV_COST_PER_TILE = 1;
   let selectedFoundTile = null; // 建国画面で選択中の座標
   let deviceKiribanHit = false; // この端末でキリ番の瞬間に立ち会ったことがあるか（実績表示用）
 
@@ -131,7 +141,18 @@
 
   function pad(n){ return String(n).padStart(6,'0'); }
   function rand(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
-  function score(v){ return v.population + v.military*3 + v.gold; }
+  // 国力 = 人口 + 兵力×3 + 資金 + 領土×TERRITORY_SCORE（領土が無い古い記録は0マス扱い）
+  function score(v){ return v.population + v.military*3 + v.gold + (v.territory ? v.territory.length : 0) * TERRITORY_SCORE; }
+  // 次に領土を1マス広げるのに必要な資金
+  function devCost(v){ return Math.max(0, (v.territory ? v.territory.length : 0) - DEV_FREE_TILES) * DEV_COST_PER_TILE; }
+  // ★B2：侵攻で奪えるマス。首都マス以外からランダムに1つ（隣接は問わない）。奪えるマスが無ければ null。
+  // 首都の判定は buildMapStatus と同じ（capital が無い古い記録は territory[0] を首都とみなす）。
+  function pickCapturableTile(v){
+    const terr = v.territory || [];
+    const cap = v.capital || terr[0];
+    const cands = terr.filter(t => !(cap && t.x === cap.x && t.y === cap.y));
+    return cands.length ? cands[Math.floor(Math.random() * cands.length)] : null;
+  }
   function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function shuffle(arr){
     for(let i=arr.length-1;i>0;i--){
@@ -634,22 +655,99 @@
       });
       return true;
     }catch(e){
+      console.warn('saveVillage failed', v && v.id, e);
       return false;
+    }finally{
+      invalidateVillageCache(); // 成否にかかわらず、自分が書いた直後の一覧キャッシュは捨てる
     }
   }
-  async function listAllVillages(){
+
+  // 国のデータを丸ごと削除する（廃墟の接収で使う）。成功したかどうかを返す。
+  async function deleteVillage(id){
     try{
-      const listRes = await storage.list('koku:', true);
-      if(!listRes || !listRes.keys) return [];
-      const out = [];
-      for(const k of listRes.keys){
-        try{
-          const r = await storage.get(k, true);
-          if(r && r.value) out.push(JSON.parse(r.value));
-        }catch(e){}
+      const r = await storage.delete('koku:'+id, true);
+      return !!r;
+    }catch(e){
+      console.warn('deleteVillage failed', id, e);
+      return false;
+    }finally{
+      invalidateVillageCache();
+    }
+  }
+
+  // ---------- 読み取り→差分適用→保存（A1：ロストアップデート対策） ----------
+  // 画面を開いている間に手元のstate.villageが古くなる（他プレイヤーの侵攻・偵察で
+  // 資金や履歴が書き換わる）ので、手元のオブジェクトを丸ごとsaveVillageすると
+  // その変更を巻き戻してしまう。そこで、保存の直前に最新の記録を読み直し、
+  // mutate(最新の記録) の中で「増減（差分）」だけを加えてから保存する。
+  // ・mutateが false を返したときは保存せず、最新の記録だけを返す。
+  // ・storageには比較して書き込む（CAS）機能が無いため、「読み直し」と「書き込み」の
+  //   間に他の人が書いた場合の取りこぼしは原理上ゼロにはできない。ただし窓は
+  //   画面を開いていた時間（数分）から通信1往復分（数十ms）まで縮まる。この点は許容する。
+  // 返り値：{ ok:true, village, skipped? } / { ok:false, reason:'missing'|'read'|'write' }
+  async function updateVillage(id, mutate){
+    let fresh;
+    try{
+      fresh = await fetchVillage(id);
+    }catch(e){
+      console.warn('updateVillage: read failed', id, e);
+      return { ok:false, reason:'read' };
+    }
+    if(!fresh) return { ok:false, reason:'missing' };
+    fresh.log = fresh.log || [];
+    if(mutate(fresh) === false) return { ok:true, skipped:true, village:fresh };
+    const saved = await saveVillage(fresh);
+    return saved ? { ok:true, village:fresh } : { ok:false, reason:'write' };
+  }
+
+  // ---------- 国一覧の取得（A3） ----------
+  // ・全件を並列(Promise.all)で読む（以前は1件ずつ直列で、国が増えるほど遅くなっていた）。
+  // ・LIST_CACHE_MS の間は結果を使い回す。自分が保存・削除したときは捨てる。
+  //   他のプレイヤーの変更は最大でこの時間だけ遅れて見える（ランキング・地図の表示用途なので許容）。
+  // ・opts.force : キャッシュを使わず取り直す（建国直前の空き確認など、最新が要る場面）
+  // ・opts.strict: 1件でも読めなければ例外を投げる（既定は読めた分だけ返す）。
+  //   「他国の領土を確認できないまま開拓して他国の土地に重ねてしまう」のを防ぐために使う。
+  const villageCache = { list:null, at:0, gen:0 };
+  function invalidateVillageCache(){
+    villageCache.list = null;
+    villageCache.at = 0;
+    villageCache.gen++; // 取得中だった古い結果がキャッシュに戻るのを防ぐ
+  }
+  async function loadVillageList(strict){
+    const listRes = await storage.list('koku:', true);
+    if(!listRes || !listRes.keys) throw new Error('storage.list failed');
+    let failed = 0;
+    const rows = await Promise.all(listRes.keys.map(async (k)=>{
+      try{
+        const r = await storage.get(k, true);
+        return (r && r.value) ? JSON.parse(r.value) : null;
+      }catch(e){
+        failed++;
+        console.warn('listAllVillages: could not read', k, e);
+        return null;
       }
-      return out;
-    }catch(e){ return []; }
+    }));
+    if(failed > 0 && strict) throw new Error('could not read ' + failed + ' village(s)');
+    return { list: rows.filter(Boolean), complete: failed === 0 };
+  }
+  async function listAllVillages(opts){
+    opts = opts || {};
+    if(!opts.force && villageCache.list && (Date.now() - villageCache.at) < LIST_CACHE_MS){
+      return villageCache.list.slice();
+    }
+    const gen = villageCache.gen;
+    try{
+      const { list, complete } = await loadVillageList(!!opts.strict);
+      if(complete && gen === villageCache.gen){ // 読み漏れのある結果はキャッシュしない
+        villageCache.list = list;
+        villageCache.at = Date.now();
+      }
+      return list.slice();
+    }catch(e){
+      console.warn('listAllVillages failed', e);
+      if(opts.strict) throw e;
+      return [];
+    }
   }
 
   function addLog(v, text, cls){
@@ -711,9 +809,13 @@
   // その日はじめてこの国を開いたとき、行動回数を消費せずに少しだけ資源をもらえる、
   // 個人サイトCGIゲームの定番「ログインボーナス」演出。前回のボーナス日が「昨日」なら
   // 連続日数（streak）を伸ばし、間が空いていれば1日目にリセットする。
-  async function checkDailyBonus(v){
+  // ★A2：以前はここで毎回saveVillageしていたが、領土の後付け割り当てと合わせて
+  // 読み込み時に2回保存していた。今回は記録を書き換えるだけにして、保存は
+  // prepareVillage() の1回にまとめている。
+  // 返り値：ボーナスを付与したときはそのログ文、受け取り済みなら null
+  function applyDailyBonus(v){
     const today = localDateStr();
-    if(v.lastBonusDate === today) return false;
+    if(v.lastBonusDate === today) return null;
     let streak = 1;
     if(v.lastBonusDate){
       try{
@@ -732,22 +834,63 @@
     const goldGain = 5 + bonusMul*2;
     v.population += popGain;
     v.gold += goldGain;
-    addLog(v, `本日はじめてのご来訪です（連続${streak}日目）。ログインボーナスとして人口+${popGain}・資金+${goldGain}を得た。`, 'g');
+    const text = `本日はじめてのご来訪です（連続${streak}日目）。ログインボーナスとして人口+${popGain}・資金+${goldGain}を得た。`;
+    addLog(v, text, 'g');
     recordScoreHistory(v);
-    await saveVillage(v);
-    return true;
+    return text;
   }
 
   // ---------- 領土の後付け割り当て（マップ機能導入前に建国した国のための移行処理） ----------
-  async function ensureTerritory(v){
+  // 記録を書き換えるだけで保存はしない。すでに領土があれば何もせず false を返す。
+  function applyTerritoryMigration(v, tile){
     if(v.territory && v.territory.length > 0) return false;
-    const allVillages = await listAllVillages();
-    const tile = findRandomValidTile(allVillages, v.id) || { x:Math.floor(MAP_SIZE/2), y:Math.floor(MAP_SIZE/2) };
     v.territory = [tile];
     v.capital = tile;
     addLog(v, `国土の記録が整備され、座標(${tile.x},${tile.y})が正式な領土として登録された。`, 'g');
-    await saveVillage(v);
     return true;
+  }
+
+  // 国を開いたときの準備（領土の後付け＋ログインボーナス）を、読み直し→1回の保存で行う。
+  // 最新の記録に対して適用するので、別タブで先に受け取り済みならボーナスは二重に付かない。
+  // 保存に失敗したときは手元の記録をそのまま使い、notice に理由を入れて返す
+  // （lastBonusDateは更新されないので、次に開いたときにもう一度付与を試みる＝取りこぼさない）。
+  async function prepareVillage(v){
+    let tile = null;
+    if(!(v.territory && v.territory.length > 0)){
+      try{
+        const all = await listAllVillages({ force:true, strict:true });
+        tile = findRandomValidTile(all, v.id) || { x:Math.floor(MAP_SIZE/2), y:Math.floor(MAP_SIZE/2) };
+      }catch(e){
+        console.warn('prepareVillage: could not check map; territory migration postponed', e);
+      }
+    }
+    let bonusText = null;
+    const res = await updateVillage(v.id, (f)=>{
+      let changed = false;
+      if(tile && applyTerritoryMigration(f, tile)) changed = true;
+      bonusText = applyDailyBonus(f);
+      if(bonusText) changed = true;
+      return changed; // 何も変わらなければ false → 保存しない
+    });
+    if(!res.ok){
+      return {
+        village: v, bonusText: null,
+        notice: '通信エラーのため、ログインボーナスなどの保存ができませんでした。しばらくしてからページを開き直してください。'
+      };
+    }
+    return { village: res.village, bonusText, notice: null };
+  }
+
+  // 国を選んでゲーム画面に入る共通処理（ホームの「続ける」・起動時の自動ログイン）
+  async function enterGame(v){
+    const prep = await prepareVillage(v);
+    state.village = prep.village;
+    state.village.log = state.village.log || [];
+    state.lastResult = prep.notice ? { text: prep.notice, cls: 'r' }
+                     : prep.bonusText ? { text: prep.bonusText, cls: 'g' }
+                     : null;
+    state.pendingRetry = null;
+    await renderGame();
   }
 
   // ---------- 伝言板（全プレイヤー共有） ----------
@@ -935,7 +1078,7 @@
       return;
     }
     // 建国直前にもう一度だけ空きを確認する（選んでいる間に他の人が先に建国した可能性があるため）
-    const freshVillages = await listAllVillages();
+    const freshVillages = await listAllVillages({ force:true }); // キャッシュではなく最新を確認する
     if(!isTileFree(selectedFoundTile.x, selectedFoundTile.y, freshVillages, null)){
       errorEl.textContent = 'その場所はたった今、他の誰かが使ったようです。地図を選び直してください。';
       await renderFoundingForm();
@@ -957,6 +1100,7 @@
   // ---------- ホーム画面（複数アカウント切り替え） ----------
   async function renderHome(){
     clearCooldownTimer();
+    state.lastResult = null; state.pendingRetry = null; // 別の国に切り替えても前の国の結果を引きずらない
     appEl.innerHTML = '<div class="loading">読み込み中…</div>';
     const ids = await getMyIds();
     const accounts = [];
@@ -998,12 +1142,8 @@
         try{
           const v = await fetchVillage(id);
           if(v){
-            v.log = v.log || [];
-            state.village = v;
             await setCurrentId(id);
-            await ensureTerritory(v);
-            await checkDailyBonus(v);
-            await renderGame();
+            await enterGame(v);
           }else{
             await renderDataMissing(id);
           }
@@ -1052,6 +1192,7 @@
     }
     await addMyId(id); // この端末のアカウント一覧に登録（失敗しても致命的ではないので待たない扱いでよい）
     state.village = v;
+    state.lastResult = null; state.pendingRetry = null;
     await renderGame();
   }
 
@@ -1092,24 +1233,131 @@
     if(toHomeBtn){ toHomeBtn.addEventListener('click', renderHome); }
   }
 
-  async function renderGame(){
-    clearCooldownTimer();
-    appEl.innerHTML = '<div class="loading">読み込み中…</div>';
-    state.allVillages = await listAllVillages();
-    const v = state.village;
-    const elapsed = Date.now() - (v.lastActionAt || 0);
-    const canAct = elapsed >= COOLDOWN_MS;
-    const others = state.allVillages.filter(o => o.id !== v.id);
-    const abandoned = getAbandonedVillages(state.allVillages, v.id);
+  // ---------- ゲーム画面 ----------
+  // ★C1：以前は行動のたびに画面全体を「処理中…」に置き換えてから作り直していたため、
+  // 毎回チラついて開閉状態・スクロール位置・選択中の侵攻先も失われていた。
+  // 画面の骨組み(#gameRoot)は最初の1回だけ作り、以後は「中身が変わったパネルの
+  // 本文だけ」を差し替える。行動中はボタンを無効化して、行動パネルの中に「処理中…」を出すだけにする。
+  const paintedHtml = new WeakMap(); // パネル本文ごとの「最後に描いたHTML」。同じなら再描画しない
 
-    // クールダウン中もボタン自体は表示したまま残し、disabled属性で非活性化する
-    // （以前はボタン領域ごとテキストに置き換えていたが、次に何ができるかが
-    // 見えたままの方がプレイしやすいため）
+  function gameShellHtml(){
+    return `
+      <div id="gameRoot">
+        <div class="home-bar">
+          <button type="button" class="retro-btn btn-inline" id="homeBtn">🏠 ホームに戻る</button>
+        </div>
+        <div class="panel" data-panel-id="status"><div class="panel-head"></div><div class="panel-body"></div></div>
+
+        <div class="panel" data-panel-id="map">
+          <div class="panel-head">▼ 地図</div>
+          <div class="panel-body">
+            <button type="button" class="retro-btn" id="mapBtn">🗺️ 世界地図を見る（クールタイムなし）</button>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="record">
+          <div class="panel-head">▼ 記録</div>
+          <div class="panel-body">
+            <a href="Story.html" class="retro-btn btn-inline" style="display:inline-block;text-decoration:none;text-align:center;">📖 物語を読む（クールタイムなし）</a>
+            <button type="button" class="retro-btn btn-inline" id="boardBtn" style="margin-top:6px;">📜 伝言板を見る</button>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="action"><div class="panel-head">▼ 行動</div><div class="panel-body"></div></div>
+        <div class="panel" data-panel-id="log"><div class="panel-head">▼ できごと履歴</div><div class="panel-body"></div></div>
+        <div class="panel" data-panel-id="nickname"><div class="panel-head">▼ 二つ名をつける</div><div class="panel-body"></div></div>
+
+        <div class="panel" data-panel-id="search">
+          <div class="panel-head">▼ 国名検索</div>
+          <div class="panel-body">
+            <input type="text" id="searchInput" class="text-input" placeholder="国名の一部を入力…">
+            <div id="searchResult" class="loglist"><div class="row">国名を入力すると、参加中の国から検索します。</div></div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="ranking"><div class="panel-head"></div><div class="panel-body"></div></div>
+        <div class="panel" data-panel-id="achievements"><div class="panel-head"></div><div class="panel-body"></div></div>
+        <div class="panel" data-panel-id="history"><div class="panel-head"></div><div class="panel-body"></div></div>
+      </div>`;
+  }
+
+  // 骨組みに固定のイベントを1回だけ付ける（中身が差し替わっても骨組みは残るので付け直し不要）。
+  // 行動ボタンや二つ名ボタンのように中身ごと差し替わる要素は、onGameClick で委譲して扱う。
+  function bindGameShell(){
+    document.getElementById('homeBtn').addEventListener('click', async ()=>{ await goHome(); });
+    document.getElementById('mapBtn').addEventListener('click', showWorldMap);
+    document.getElementById('boardBtn').addEventListener('click', showBoard);
+    document.getElementById('searchInput').addEventListener('input', ()=>{
+      const v = state.village;
+      const q = document.getElementById('searchInput').value.trim().toLowerCase();
+      const resultEl = document.getElementById('searchResult');
+      if(!q){ resultEl.innerHTML = '<div class="row">国名を入力すると、参加中の国から検索します。</div>'; return; }
+      const hits = state.allVillages.filter(o => o.name && o.name.toLowerCase().includes(q)).slice(0,20);
+      resultEl.innerHTML = hits.length
+        ? hits.map(o=>`<div class="row">🏯 ${dispName(v,o)}${o.id===v.id?'（あなた）':''}　国力${score(o)}　${esc(getTitle(score(o)))}</div>`).join('')
+        : '<div class="row">該当する国が見つかりませんでした。</div>';
+    });
+  }
+
+  // 1つのパネルの見出し・本文を更新する。本文は前回と同じHTMLなら触らない。
+  // 差し替えるときも、選択中のプルダウンの値は（選択肢が残っていれば）引き継ぐ。
+  // 見出しの先頭の ▼/▶ は、そのパネルが折りたたまれているかどうかに合わせる。
+  function setPanel(id, headText, bodyHtml){
+    const panel = appEl.querySelector('.panel[data-panel-id="' + id + '"]');
+    if(!panel) return;
+    const head = panel.querySelector('.panel-head');
+    const body = panel.querySelector('.panel-body');
+    if(head && headText != null){
+      head.textContent = (panel.classList.contains('collapsed') ? '▶' : '▼') + ' ' + headText;
+    }
+    if(body && bodyHtml != null && paintedHtml.get(body) !== bodyHtml){
+      const keep = {};
+      body.querySelectorAll('select[id]').forEach(s=>{ keep[s.id] = s.value; });
+      body.innerHTML = bodyHtml;
+      paintedHtml.set(body, bodyHtml);
+      Object.keys(keep).forEach(sid=>{
+        const s = document.getElementById(sid);
+        if(s && Array.from(s.options).some(o => o.value === keep[sid])) s.value = keep[sid];
+      });
+    }
+  }
+
+  function paintStatus(v){
+    setPanel('status', `${v.name} の様子`, `
+      <table class="stats">
+        ${statRow('建国日', esc(v.founded))}
+        ${statRow('拠点座標', v.capital ? `(${v.capital.x}, ${v.capital.y})` : '－')}
+        ${statRow('領土', (v.territory ? v.territory.length : 0) + ' マス')}
+        ${statRow('🌾 人口', v.population)}
+        ${statRow('⚔️ 兵力', v.military)}
+        ${statRow('💰 資金', v.gold)}
+        ${statRow('連続来訪', (v.loginStreak||1) + ' 日目')}
+        ${statRow('国力', '<b>'+score(v)+'</b> <span class="title-badge">'+esc(getTitle(score(v)))+'</span>')}
+      </table>`);
+  }
+
+  // 行動パネル。クールダウン中・行動処理中はボタンを表示したままdisabledにする。
+  // ★C3（最小限）：直近の行動結果をパネルの一番上に出す。ログ欄は画面の下の方にあるため、
+  // 画面全体を置き換えなくなった今、結果が目に入る場所が必要になる。
+  function paintAction(v, others){
+    const busy = !!state.busy;
+    const elapsed = Date.now() - (v.lastActionAt || 0);
+    const canAct = !busy && elapsed >= COOLDOWN_MS;
+    const abandoned = getAbandonedVillages(state.allVillages, v.id);
+    const devNeed = devCost(v);
     const dis = canAct ? '' : 'disabled';
     const remainSec = Math.max(0, Math.ceil((COOLDOWN_MS - elapsed)/1000));
-    const actionHtml = `
+    const r = state.lastResult;
+    const resultHtml = (!busy && r && r.text) ? `
+      <div class="msgbox result-box ${esc(r.cls || '')}" role="status" style="margin-bottom:8px;">${esc(r.text)}${state.pendingRetry ? `<br><button type="button" class="retro-btn btn-inline" data-retry="1" style="margin-top:6px;">もう一度保存する</button>` : ''}</div>` : '';
+    const statusLine = busy
+      ? `<div class="msgbox" role="status" style="margin-top:8px;">処理中…</div>`
+      : (!canAct ? `<div class="msgbox" style="margin-top:8px;">次の行動まで、あと <b id="cooldownSec">${remainSec}</b> 秒お待ちください。</div>` : '');
+
+    setPanel('action', '行動', `
+      ${resultHtml}
       <div class="action-grid">
-        <button class="retro-btn" data-action="dev" ${dis}>🌾 開拓する</button>
+        <button class="retro-btn" data-action="dev" ${dis}>🌾 開拓する${devNeed>0 ? `（資金${devNeed}）` : ''}</button>
         <button class="retro-btn" data-action="train" ${dis}>⚔️ 訓練する</button>
         <button class="retro-btn" data-action="trade" ${dis}>💰 交易する</button>
         <button class="retro-btn" data-action="scout" ${(!canAct || others.length===0)?'disabled':''}>🔍 偵察する</button>
@@ -1117,9 +1365,9 @@
       <div style="margin-top:8px;">
         ${others.length>0 ? `
           <select class="retro-select" id="targetSelect" ${dis}>
-            ${others.map(o=>`<option value="${esc(o.id)}">${dispName(v,o)}（国力目安 ${score(o)}）</option>`).join('')}
+            ${others.map(o=>`<option value="${esc(o.id)}">${dispName(v,o)}（国力目安 ${score(o)}・領土${o.territory ? o.territory.length : 0}マス）</option>`).join('')}
           </select>
-          <button class="retro-btn" data-action="invade" ${dis}>⚔️ 侵攻する（他国を攻める）</button>
+          <button class="retro-btn" data-action="invade" ${dis}>⚔️ 侵攻する（勝てば領土を奪う）</button>
         ` : `<div class="msgbox">まだ他に国がありません。誰かが建国するのを待とう。</div>`}
       </div>
       ${abandoned.length>0 ? `
@@ -1131,324 +1379,461 @@
           <button class="retro-btn" data-action="reclaim" ${dis}>🏚️ 廃墟を接収する</button>
         </div>
       ` : ''}
-      ${!canAct ? `<div class="msgbox" style="margin-top:8px;">次の行動まで、あと <b id="cooldownSec">${remainSec}</b> 秒お待ちください。</div>` : ''}`;
+      ${statusLine}`);
 
-    const ranked = state.allVillages.slice().sort((a,b)=>score(b)-score(a)).slice(0,12);
+    // 行動中にホームへ戻られると、完了後の再描画がホーム画面を上書きしてしまうので止めておく
+    const homeBtn = document.getElementById('homeBtn');
+    if(homeBtn) homeBtn.disabled = busy;
+  }
 
+  // 行動パネルだけを（保存済みの状態のまま）描き直す。busyの切り替え時に使う。
+  function paintActionOnly(){
+    const v = state.village;
+    if(!v) return;
+    paintAction(v, state.allVillages.filter(o => o.id !== v.id));
+  }
+
+  function paintLog(v){
+    setPanel('log', 'できごと履歴', `
+      <div class="loglist">
+        ${(v.log&&v.log.length) ? v.log.map(l=>`<div class="row"><span class="date">[${esc(l.date)}]</span><span class="${esc(l.cls||'')}">${esc(l.text)}</span></div>`).join('') : '<div class="row">まだ何も起きていない。</div>'}
+      </div>`);
+  }
+
+  function paintNickname(v, others){
+    setPanel('nickname', '二つ名をつける', others.length>0 ? `
+      <div class="msgbox" style="margin-bottom:6px;">相手の国に、あなただけの呼び名をつけられます（あなたの画面にだけ反映されます）。</div>
+      <select class="retro-select" id="nicknameTarget">
+        ${others.map(o=>`<option value="${esc(o.id)}">${dispName(v,o)}</option>`).join('')}
+      </select>
+      <input type="text" id="nicknameInput" maxlength="8" class="text-input" placeholder="二つ名（8文字まで／空欄で解除）">
+      <button type="button" class="retro-btn btn-inline" id="nicknameSubmitBtn">この名で呼ぶ</button>
+    ` : `<div class="msgbox">まだ他に国がありません。</div>`);
+  }
+
+  function paintRanking(v, all){
+    const ranked = all.slice().sort((a,b)=>score(b)-score(a)).slice(0,12);
+    setPanel('ranking', `国力ランキング（参加中の全 ${all.length} 国中）`, `
+      <table class="rank">
+        <tr><th>順位</th><th>国名</th><th>称号</th><th>国力</th></tr>
+        ${ranked.map((r,i)=>`
+          <tr class="${r.id===v.id?'me':''} ${i===0?'top1':''}">
+            <td class="rk">${i+1}位</td>
+            <td>${dispName(v,r)}${r.id===v.id?'（あなた）':''}</td>
+            <td>${esc(getTitle(score(r)))}</td>
+            <td>${score(r)}</td>
+          </tr>`).join('')}
+      </table>`);
+  }
+
+  function paintAchievements(v){
     const achDone = ACHIEVEMENTS.filter(a=>a.check(v)).length;
     const achHtml = ACHIEVEMENTS.map(a=>{
       const done = !!a.check(v);
       return `<div class="row-between ach-row${done?' done':''}"><span>${done?'✅':'⬜'} ${esc(a.label)}</span><span class="ach-desc">${esc(a.desc)}</span></div>`;
     }).join('');
+    setPanel('achievements', `実績（${achDone}/${ACHIEVEMENTS.length}）`, achHtml);
+  }
 
+  function paintHistory(v){
     const hist = v.scoreHistory || [];
     const histMax = Math.max(v.maxScore || score(v), ...hist.map(h=>h.score), 1);
     const histHtml = hist.length ? hist.slice().reverse().map(h=>{
       const pct = Math.max(4, Math.round(h.score / histMax * 100));
       return `<div class="hist-row"><span class="hist-date">${esc(h.date.slice(5))}</span><div class="hist-bar-track"><div class="hist-bar" style="width:${pct}%;"></div></div><span class="hist-val">${h.score}</span></div>`;
     }).join('') : '<div class="msgbox">まだ記録がありません（翌日以降のご来訪で記録されます）。</div>';
+    setPanel('history', `国力の推移（歴代最高：${v.maxScore || score(v)}）`, histHtml);
+  }
 
-    appEl.innerHTML = `
-      <div class="home-bar">
-        <button type="button" class="retro-btn btn-inline" id="homeBtn">🏠 ホームに戻る</button>
-      </div>
-      <div class="panel" data-panel-id="status">
-        <div class="panel-head">▼ ${esc(v.name)} の様子</div>
-        <div class="panel-body">
-          <table class="stats">
-            ${statRow('建国日', esc(v.founded))}
-            ${statRow('拠点座標', v.capital ? `(${v.capital.x}, ${v.capital.y})` : '－')}
-            ${statRow('領土', (v.territory ? v.territory.length : 0) + ' マス')}
-            ${statRow('🌾 人口', v.population)}
-            ${statRow('⚔️ 兵力', v.military)}
-            ${statRow('💰 資金', v.gold)}
-            ${statRow('連続来訪', (v.loginStreak||1) + ' 日目')}
-            ${statRow('国力', '<b>'+score(v)+'</b> <span class="title-badge">'+esc(getTitle(score(v)))+'</span>')}
-          </table>
-        </div>
-      </div>
+  function paintGame(){
+    const v = state.village;
+    const all = state.allVillages;
+    const others = all.filter(o => o.id !== v.id);
+    paintStatus(v);
+    paintAction(v, others);
+    paintLog(v);
+    paintNickname(v, others);
+    paintRanking(v, all);
+    paintAchievements(v);
+    paintHistory(v);
+  }
 
-      <div class="panel" data-panel-id="map">
-        <div class="panel-head">▼ 地図</div>
-        <div class="panel-body">
-          <button type="button" class="retro-btn" id="mapBtn">🗺️ 世界地図を見る（クールタイムなし）</button>
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="record">
-        <div class="panel-head">▼ 記録</div>
-        <div class="panel-body">
-          <a href="Story.html" class="retro-btn btn-inline" style="display:inline-block;text-decoration:none;text-align:center;">📖 物語を読む（クールタイムなし）</a>
-          <button type="button" class="retro-btn btn-inline" id="boardBtn" style="margin-top:6px;">📜 伝言板を見る</button>
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="action">
-        <div class="panel-head">▼ 行動</div>
-        <div class="panel-body">${actionHtml}</div>
-      </div>
-
-      <div class="panel" data-panel-id="log">
-        <div class="panel-head">▼ できごと履歴</div>
-        <div class="panel-body">
-          <div class="loglist">
-            ${(v.log&&v.log.length) ? v.log.map(l=>`<div class="row"><span class="date">[${esc(l.date)}]</span><span class="${l.cls}">${esc(l.text)}</span></div>`).join('') : '<div class="row">まだ何も起きていない。</div>'}
-          </div>
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="nickname">
-        <div class="panel-head">▼ 二つ名をつける</div>
-        <div class="panel-body">
-          ${others.length>0 ? `
-            <div class="msgbox" style="margin-bottom:6px;">相手の国に、あなただけの呼び名をつけられます（あなたの画面にだけ反映されます）。</div>
-            <select class="retro-select" id="nicknameTarget">
-              ${others.map(o=>`<option value="${esc(o.id)}">${dispName(v,o)}</option>`).join('')}
-            </select>
-            <input type="text" id="nicknameInput" maxlength="8" class="text-input" placeholder="二つ名（8文字まで／空欄で解除）">
-            <button type="button" class="retro-btn btn-inline" id="nicknameSubmitBtn">この名で呼ぶ</button>
-          ` : `<div class="msgbox">まだ他に国がありません。</div>`}
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="search">
-        <div class="panel-head">▼ 国名検索</div>
-        <div class="panel-body">
-          <input type="text" id="searchInput" class="text-input" placeholder="国名の一部を入力…">
-          <div id="searchResult" class="loglist"><div class="row">国名を入力すると、参加中の国から検索します。</div></div>
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="ranking">
-        <div class="panel-head">▼ 国力ランキング（参加中の全 ${state.allVillages.length} 国中）</div>
-        <div class="panel-body">
-          <table class="rank">
-            <tr><th>順位</th><th>国名</th><th>称号</th><th>国力</th></tr>
-            ${ranked.map((r,i)=>`
-              <tr class="${r.id===v.id?'me':''} ${i===0?'top1':''}">
-                <td class="rk">${i+1}位</td>
-                <td>${dispName(v,r)}${r.id===v.id?'（あなた）':''}</td>
-                <td>${esc(getTitle(score(r)))}</td>
-                <td>${score(r)}</td>
-              </tr>`).join('')}
-          </table>
-        </div>
-      </div>
-
-      <div class="panel" data-panel-id="achievements">
-        <div class="panel-head">▼ 実績（${achDone}/${ACHIEVEMENTS.length}）</div>
-        <div class="panel-body">${achHtml}</div>
-      </div>
-
-      <div class="panel" data-panel-id="history">
-        <div class="panel-head">▼ 国力の推移（歴代最高：${v.maxScore || score(v)}）</div>
-        <div class="panel-body">${histHtml}</div>
-      </div>
-    `;
-
-    document.getElementById('homeBtn').addEventListener('click', async ()=>{
-      await goHome();
-    });
-    document.getElementById('mapBtn').addEventListener('click', showWorldMap);
-    document.getElementById('boardBtn').addEventListener('click', showBoard);
-
-    const nicknameBtn = document.getElementById('nicknameSubmitBtn');
-    if(nicknameBtn){
-      nicknameBtn.addEventListener('click', async ()=>{
-        const sel = document.getElementById('nicknameTarget');
-        const input = document.getElementById('nicknameInput');
-        const targetId = sel ? sel.value : null;
-        if(!targetId) return;
-        const name = input.value.trim().slice(0,8);
-        v.nicknames = v.nicknames || {};
-        if(name){ v.nicknames[targetId] = name; } else { delete v.nicknames[targetId]; }
-        nicknameBtn.disabled = true;
-        await saveVillage(v);
-        await renderGame();
-      });
+  async function renderGame(){
+    clearCooldownTimer();
+    const hasShell = !!appEl.querySelector('#gameRoot');
+    if(!hasShell){ appEl.innerHTML = '<div class="loading">読み込み中…</div>'; }
+    state.allVillages = await listAllVillages();
+    // 他のプレイヤーの侵攻・偵察で自国の記録が書き換わっていることがあるので、最新を取り直す。
+    // 取得に失敗したときは手元の値のまま表示する。
+    try{
+      const latest = await fetchVillage(state.village.id);
+      if(latest){ latest.log = latest.log || []; state.village = latest; }
+    }catch(e){
+      console.warn('renderGame: could not refresh own record', e);
     }
-
-    const searchInput = document.getElementById('searchInput');
-    if(searchInput){
-      searchInput.addEventListener('input', ()=>{
-        const q = searchInput.value.trim().toLowerCase();
-        const resultEl = document.getElementById('searchResult');
-        if(!q){ resultEl.innerHTML = '<div class="row">国名を入力すると、参加中の国から検索します。</div>'; return; }
-        const hits = state.allVillages.filter(o => o.name && o.name.toLowerCase().includes(q)).slice(0,20);
-        resultEl.innerHTML = hits.length
-          ? hits.map(o=>`<div class="row">🏯 ${dispName(v,o)}${o.id===v.id?'（あなた）':''}　国力${score(o)}　${esc(getTitle(score(o)))}</div>`).join('')
-          : '<div class="row">該当する国が見つかりませんでした。</div>';
-      });
+    if(!hasShell){
+      appEl.innerHTML = gameShellHtml();
+      bindGameShell();
     }
+    paintGame();
 
-    if(canAct){
-      appEl.querySelectorAll('[data-action]').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          // ★侵攻先はDOMを消す前にここで読み取っておく（以前は消してから読んでいて常に失敗していた）
-          let targetId = null;
-          if(btn.dataset.action === 'invade'){
-            const sel = document.getElementById('targetSelect');
-            targetId = sel ? sel.value : null;
-          }else if(btn.dataset.action === 'reclaim'){
-            const sel = document.getElementById('reclaimSelect');
-            targetId = sel ? sel.value : null;
-          }
-          handleAction(btn.dataset.action, targetId);
-        });
-      });
-    }else{
+    const v = state.village;
+    if(!state.busy && (Date.now() - (v.lastActionAt || 0)) < COOLDOWN_MS){
       startCooldownTimer(v.lastActionAt + COOLDOWN_MS);
     }
   }
 
+  // 行動ボタン・「もう一度保存する」・二つ名ボタンは、パネルの中身ごと差し替わるので
+  // appElへのイベント委譲で受ける（差し替えのたびにリスナーを付け直さなくてよい）。
+  function onGameClick(e){
+    const actBtn = e.target.closest('[data-action]');
+    if(actBtn && appEl.contains(actBtn)){
+      if(actBtn.disabled) return;
+      const action = actBtn.dataset.action;
+      // 侵攻先・接収先は、行動パネルの描き直しで値が変わる前にここで読み取る
+      let targetId = null;
+      if(action === 'invade'){
+        const sel = document.getElementById('targetSelect');
+        targetId = sel ? sel.value : null;
+      }else if(action === 'reclaim'){
+        const sel = document.getElementById('reclaimSelect');
+        targetId = sel ? sel.value : null;
+      }
+      handleAction(action, targetId);
+      return;
+    }
+    if(e.target.closest('[data-retry]')){ handleRetry(); return; }
+    const nickBtn = e.target.closest('#nicknameSubmitBtn');
+    if(nickBtn && appEl.contains(nickBtn)){ handleNicknameSubmit(nickBtn); }
+  }
+  appEl.addEventListener('click', onGameClick);
+
+  // 二つ名は自分のデータの中だけに持つ項目なので、差分（この1件だけ）を最新の記録に適用して保存する
+  async function handleNicknameSubmit(btn){
+    if(state.busy || !state.village) return;
+    const sel = document.getElementById('nicknameTarget');
+    const input = document.getElementById('nicknameInput');
+    const targetId = sel ? sel.value : null;
+    if(!targetId) return;
+    const name = input.value.trim().slice(0,8);
+    state.busy = true;
+    btn.disabled = true;
+    paintActionOnly();
+    const res = await updateVillage(state.village.id, (f)=>{
+      f.nicknames = f.nicknames || {};
+      if(name){ f.nicknames[targetId] = name; } else { delete f.nicknames[targetId]; }
+    });
+    state.busy = false;
+    if(res.ok && res.village){
+      state.village = res.village;
+    }else{
+      state.lastResult = { text:'二つ名を保存できませんでした。通信状況をご確認のうえ、もう一度お試しください。', cls:'r' };
+    }
+    await renderGame();
+  }
+
+  // ---------- 行動 ----------
+  // 行動は「計画(plan)」として組み立て、execPlan() が順番に実行する。
+  // ・記録の書き込みは必ず updateVillage（保存直前に読み直して差分だけ適用）を通す（A1）。
+  //   これは相手の国だけでなく自分の国も同じ：画面を開いている間に侵攻された分を巻き戻さないため。
+  // ・資金が動く行動は「減る側を先に保存し、実際に減った額だけ増える側に足す」順にする。
+  //   途中で通信が切れても、資金が増殖する（二重に付く）ことはなく、最悪でも消えるだけで済む。
+  // ・途中のステップが失敗したときは、成功済みのステップはやり直さず、失敗したステップから再開する。
+  // ・クールタイムはクライアント側の判定のみ（lastActionAtを国のデータに持たせる方式）。
+  //   データを直接書き換えられれば回避できてしまうため、完全な防止は不可能で、これは許容する。
   async function handleAction(action, targetId){
-    const v = state.village;
-    const elapsed = Date.now() - (v.lastActionAt || 0);
-    if(elapsed < COOLDOWN_MS) return;
+    if(state.busy || !state.village) return;
+    if(Date.now() - (state.village.lastActionAt || 0) < COOLDOWN_MS) return;
+    state.busy = true;
+    state.pendingRetry = null;
+    paintActionOnly();
+    let outcome;
+    try{
+      outcome = await runAction(action, targetId);
+    }catch(e){
+      console.warn('handleAction failed', action, e);
+      outcome = { text:'処理中にエラーが発生しました。もう一度お試しください。', cls:'r' };
+    }
+    await finishOutcome(outcome);
+  }
 
-    appEl.innerHTML = '<div class="loading">処理中…</div>';
+  async function handleRetry(){
+    const fn = state.pendingRetry;
+    if(state.busy || !fn) return;
+    state.busy = true;
+    state.pendingRetry = null;
+    paintActionOnly();
+    let outcome;
+    try{
+      outcome = await fn();
+    }catch(e){
+      console.warn('retry failed', e);
+      outcome = { text:'処理中にエラーが発生しました。もう一度お試しください。', cls:'r' };
+    }
+    await finishOutcome(outcome);
+  }
 
-    let target = null;
+  async function finishOutcome(outcome){
+    state.busy = false;
+    if(outcome.village){ state.village = outcome.village; }
+    state.lastResult = { text: outcome.text, cls: outcome.cls || '' };
+    state.pendingRetry = outcome.retry || null;
+    await renderGame();
+  }
+
+  async function execPlan(plan, from){
+    for(let i = from; i < plan.steps.length; i++){
+      let ok = false;
+      try{ ok = await plan.steps[i](); }
+      catch(e){ console.warn('action step failed', i, e); }
+      if(!ok){
+        return {
+          text:'結果の保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。',
+          cls:'r',
+          village: plan.self || undefined,
+          retry: ()=> execPlan(plan, i)
+        };
+      }
+    }
+    return { text: plan.text, cls: plan.cls, village: plan.self };
+  }
+
+  async function runAction(action, targetId){
+    const vid = state.village.id;
+    // 手元のstate.villageは古いことがあるので、判断に使う自国の値は最新を取り直す
+    let me = null;
+    try{ me = await fetchVillage(vid); }
+    catch(e){ console.warn('runAction: could not read own record', e); }
+    if(!me){
+      return { text:'国のデータを読み込めませんでした。通信状況をご確認のうえ、もう一度お試しください。', cls:'r' };
+    }
+    me.log = me.log || [];
+    // 別タブなどで先に行動していた場合もここで止まる
+    if(Date.now() - (me.lastActionAt || 0) < COOLDOWN_MS){
+      return { text:'まだ行動できません。クールタイムが明けるまでお待ちください。', cls:'', village: me };
+    }
+
+    const plan = { steps:[], text:'', cls:'', self:null };
+    // 画面に出す結果文と、履歴に残す文を同じものにする
+    const say = (f, text, cls)=>{ plan.text = text; plan.cls = cls || ''; addLog(f, text, cls); };
+    // 自国への書き込み（lastActionAtも一緒に更新＝この保存でクールタイムが始まる）
+    const selfStep = (mutate)=> async ()=>{
+      const res = await updateVillage(vid, (f)=>{
+        mutate(f);
+        f.lastActionAt = Date.now();
+      });
+      if(res.ok && res.village){ plan.self = res.village; return true; }
+      return false;
+    };
+    // 相手国への書き込み。相手がすでに存在しない(missing)場合は失敗扱いにせず、後続に伝える
+    const targetStep = (id, mutate)=> async ()=>{
+      const res = await updateVillage(id, mutate);
+      if(res.ok) return true;
+      if(res.reason === 'missing'){ plan.targetMissing = true; return true; }
+      return false;
+    };
+
     if(action === 'dev'){
       // 開拓＝人口が少し増えるのに加えて、領土に隣接する未所有マスを1つ獲得する。
-      // ランダムに選んだマスが他国の領土と被っていた場合は、別の空いているマスを探す。
+      // 他国の領土と被っていた場合は、別の空いているマスを探す。
+      // 他国の領土を確認できないまま進めると他国の土地に重ねてしまうので、取得失敗時は見送る。
+      let freshVillages;
+      try{ freshVillages = await listAllVillages({ force:true, strict:true }); }
+      catch(e){
+        return { text:'他国の領土を確認できなかったため、開拓を見送りました。もう一度お試しください。', cls:'r', village: me };
+      }
       const gain = rand(2,5);
-      v.population += gain;
-      const freshVillages = await listAllVillages();
-      const frontier = shuffle(getFrontierTiles(v));
-      let claimed = null;
-      for(const tile of frontier){
-        if(!isOwnedByOther(tile.x, tile.y, freshVillages, v.id)){ claimed = tile; break; }
-      }
-      if(claimed){
-        v.territory = v.territory || [];
-        v.territory.push(claimed);
-        addLog(v, `荒野を開拓し、座標(${claimed.x},${claimed.y})を新たな領土とした（人口+${gain}）。`, 'g');
-      }else if(frontier.length > 0){
-        addLog(v, `開拓を試みたが、周囲はすべて他国の領土に囲まれていた（人口+${gain}）。`);
-      }else{
-        addLog(v, `荒野を開拓した（人口+${gain}）。`, 'g');
-      }
+      plan.steps.push(selfStep((f)=>{
+        f.population += gain;
+        const frontier = shuffle(getFrontierTiles(f));
+        let claimed = null;
+        for(const tile of frontier){
+          if(!isOwnedByOther(tile.x, tile.y, freshVillages, f.id)){ claimed = tile; break; }
+        }
+        // 領土を広げるには資金が要る（B1）。コストは保存直前の最新の領土数から決める。
+        // 資金が足りないときは人口が増えるだけで、領土も資金も動かさない。
+        const cost = devCost(f);
+        if(claimed && f.gold < cost){
+          say(f, `資金が足りず、領土は広げられなかった（必要${cost}・人口+${gain}）。`);
+        }else if(claimed){
+          f.territory = f.territory || [];
+          f.territory.push(claimed);
+          f.gold -= cost;
+          say(f, `荒野を開拓し、座標(${claimed.x},${claimed.y})を新たな領土とした（人口+${gain}${cost>0 ? `・資金-${cost}` : ''}）。`, 'g');
+        }else if(frontier.length > 0){
+          say(f, `開拓を試みたが、周囲はすべて他国の領土に囲まれていた（人口+${gain}）。`);
+        }else{
+          say(f, `荒野を開拓した（人口+${gain}）。`, 'g');
+        }
+      }));
 
     }else if(action === 'train'){
-      if(v.gold >= 5){
-        const gain = rand(4,8);
-        v.gold -= 5; v.military += gain;
-        addLog(v, `資金を投じて兵を鍛え、兵力が ${gain} 増えた。`, 'g');
-      }else{
-        const gain = rand(1,3);
-        v.military += gain;
-        addLog(v, `資金が乏しく、思うように訓練できなかった（兵力+${gain}）。`);
-      }
+      plan.steps.push(selfStep((f)=>{
+        if(f.gold >= 5){
+          const gain = rand(4,8);
+          f.gold -= 5; f.military += gain;
+          say(f, `資金を投じて兵を鍛え、兵力が ${gain} 増えた。`, 'g');
+        }else{
+          const gain = rand(1,3);
+          f.military += gain;
+          say(f, `資金が乏しく、思うように訓練できなかった（兵力+${gain}）。`);
+        }
+      }));
 
     }else if(action === 'trade'){
       const gain = rand(5,12);
-      v.gold += gain;
-      addLog(v, `交易により、資金が ${gain} 増えた。`, 'g');
+      plan.steps.push(selfStep((f)=>{
+        f.gold += gain;
+        say(f, `交易により、資金が ${gain} 増えた。`, 'g');
+      }));
 
     }else if(action === 'scout'){
-      // ★バグ修正：以前はrenderGame時点（最大20秒近く前）の古いstate.allVillagesを
-      // そのまま偵察結果として表示していたため、内容が実際の相手国と食い違うことがあった。
-      // 対象だけは行動直前に最新データを取り直す。
-      const others = state.allVillages.filter(o=>o.id!==v.id);
-      v.stats = v.stats || {};
-      if(others.length>0){
-        const pick = others[Math.floor(Math.random()*others.length)];
-        let t = null;
-        try{ t = await fetchVillage(pick.id); }catch(e){ t = null; }
-        if(t){
-          v.stats.scoutCount = (v.stats.scoutCount||0) + 1;
-          addLog(v, `${dispNameRaw(v,t)} を偵察した。人口${t.population}／兵力${t.military}／資金${t.gold}。`);
-          addLog(t, `${dispNameRaw(t,v)} に偵察された。`, 'r');
-          target = t;
-        }else{
-          addLog(v, '偵察を試みたが、対象の情報を取得できなかった。');
-        }
+      // 偵察先の選択にも、画面を描いた時点の古い一覧(state.allVillages)は使わない（D4）。
+      // 選んだ相手の中身は、行動の直前に取り直す。
+      const cands = (await listAllVillages()).filter(o => o.id !== vid);
+      let t = null;
+      if(cands.length > 0){
+        const pick = cands[Math.floor(Math.random()*cands.length)];
+        try{ t = await fetchVillage(pick.id); }
+        catch(e){ console.warn('scout: could not read target', pick.id, e); }
+      }
+      if(cands.length === 0){
+        plan.steps.push(selfStep((f)=>{ say(f, '偵察したが、他国は見つからなかった。'); }));
+      }else if(!t){
+        plan.steps.push(selfStep((f)=>{ say(f, '偵察を試みたが、対象の情報を取得できなかった。'); }));
       }else{
-        addLog(v, '偵察したが、他国は見つからなかった。');
+        // 相手には「偵察された」という履歴を1行足すだけ（差分適用）。これは付け足しの通知なので、
+        // 失敗しても偵察そのものは成立させる。
+        plan.steps.push(async ()=>{
+          const r = await updateVillage(t.id, (g)=>{ addLog(g, `${dispNameRaw(g, me)} に偵察された。`, 'r'); });
+          if(!r.ok) console.warn('scout: could not notify target', t.id, r.reason);
+          return true;
+        });
+        plan.steps.push(selfStep((f)=>{
+          f.stats = f.stats || {};
+          f.stats.scoutCount = (f.stats.scoutCount||0) + 1;
+          say(f, `${dispNameRaw(f,t)} を偵察した。人口${t.population}／兵力${t.military}／資金${t.gold}。`);
+        }));
       }
 
     }else if(action === 'invade'){
-      // ★バグ修正：以前はrenderGame時点の古いstate.allVillagesにある相手の兵力・資金で
-      // 勝敗と略奪額を計算し、そのままsaveVillage(target)で上書き保存していた。
-      // クールダウン中に相手が別の行動や被侵攻で状態を変えていた場合、その変化が
-      // まるごと消えてしまう（古いデータへの巻き戻り）バグになっていたため、
-      // 行動直前に対象の最新データを取得し直してから計算・保存するように修正。
-      target = targetId ? await (async()=>{ try{ return await fetchVillage(targetId); }catch(e){ return null; } })() : null;
-      v.stats = v.stats || {};
-      if(!target){
-        addLog(v, '攻め入る先が見つからなかった（データを取得できませんでした）。');
+      let t = null;
+      if(targetId){
+        try{ t = await fetchVillage(targetId); }
+        catch(e){ console.warn('invade: could not read target', targetId, e); }
+      }
+      if(!t){
+        plan.steps.push(selfStep((f)=>{ say(f, '攻め入る先が見つからなかった（データを取得できませんでした）。'); }));
       }else{
-        const atk = v.military + rand(0,5);
-        const def = target.military + rand(0,5);
+        // 勝敗は「いま取り直した」双方の値で決める。実際の増減は保存直前の最新の記録に対して
+        // 差分で適用し、相手の資金が足りなければ奪える額もその分だけ減らす。
+        const atk = me.military + rand(0,5);
+        const def = t.military + rand(0,5);
+        let actual = 0; // 実際に移動した資金
+        let captured = null; // 勝利時に奪った領土マス（B2）。①で決まり、②で攻め手に足す
         if(atk > def){
-          const stolen = Math.min(target.gold, rand(5,15));
-          target.gold -= stolen; v.gold += stolen;
-          target.military = Math.max(0, target.military - rand(1,4));
-          v.stats.invadeWins = (v.stats.invadeWins||0) + 1;
-          addLog(v, `${dispNameRaw(v,target)} に攻め込み、勝利した。${stolen} の資金を得た。`, 'g');
-          addLog(target, `${dispNameRaw(target,v)} に攻め込まれ、敗れた。${stolen} の資金を奪われた。`, 'r');
+          const want = Math.min(t.gold, rand(5,15));
+          const milLoss = rand(1,4);
+          plan.steps.push(targetStep(t.id, (g)=>{          // ① 奪われる側を先に減らす
+            actual = Math.min(g.gold, want);
+            g.gold -= actual;
+            g.military = Math.max(0, g.military - milLoss);
+            // 領土を1マス奪われる（首都は除く）。保存直前の最新の領土から選ぶ。
+            captured = pickCapturableTile(g);
+            if(captured){
+              g.territory = g.territory.filter(tt => !(tt.x === captured.x && tt.y === captured.y));
+            }
+            const lost = captured ? `${actual} の資金と座標(${captured.x},${captured.y})の領土` : `${actual} の資金`;
+            addLog(g, `${dispNameRaw(g,me)} に攻め込まれ、敗れた。${lost}を奪われた。`, 'r');
+          }));
+          plan.steps.push(selfStep((f)=>{                  // ② 実際に奪えた額だけ攻め手に足す
+            f.stats = f.stats || {};
+            if(plan.targetMissing){
+              say(f, `${dispNameRaw(f,t)} に攻め込もうとしたが、すでにその国は無くなっていた。`);
+              return;
+            }
+            f.gold += actual;
+            if(captured){
+              f.territory = f.territory || [];
+              if(!f.territory.some(tt => tt.x === captured.x && tt.y === captured.y)) f.territory.push(captured);
+            }
+            f.stats.invadeWins = (f.stats.invadeWins||0) + 1;
+            const spoils = captured ? `${actual} の資金と座標(${captured.x},${captured.y})の領土` : `${actual} の資金`;
+            say(f, `${dispNameRaw(f,t)} に攻め込み、勝利した。${spoils}を得た。`, 'g');
+          }));
         }else{
-          const lost = Math.min(v.gold, rand(3,10));
-          v.gold -= lost; target.gold += lost;
-          v.military = Math.max(0, v.military - rand(1,4));
-          v.stats.invadeLosses = (v.stats.invadeLosses||0) + 1;
-          addLog(v, `${dispNameRaw(v,target)} に攻め込んだが、敗れた。${lost} の資金を失った。`, 'r');
-          addLog(target, `${dispNameRaw(target,v)} に攻め込まれたが、撃退した。`, 'g');
+          const want = Math.min(me.gold, rand(3,10));
+          const milLoss = rand(1,4);
+          plan.steps.push(selfStep((f)=>{                  // ① 失う側（自国）を先に減らす
+            actual = Math.min(f.gold, want);
+            f.gold -= actual;
+            f.military = Math.max(0, f.military - milLoss);
+            f.stats = f.stats || {};
+            f.stats.invadeLosses = (f.stats.invadeLosses||0) + 1;
+            say(f, `${dispNameRaw(f,t)} に攻め込んだが、敗れた。${actual} の資金を失った。`, 'r');
+          }));
+          plan.steps.push(targetStep(t.id, (g)=>{          // ② 実際に失った額だけ相手に足す
+            g.gold += actual;
+            addLog(g, `${dispNameRaw(g,me)} に攻め込まれたが、撃退した。`, 'g');
+          }));
         }
       }
 
     }else if(action === 'reclaim'){
       // 廃墟（14日以上未行動）となった国の領土・資金を接収する。
-      // 直前にもう一度だけ最新データを取り直し、その間に活動が再開されていないか確認する。
-      target = targetId ? await (async()=>{ try{ return await fetchVillage(targetId); }catch(e){ return null; } })() : null;
-      v.stats = v.stats || {};
-      if(!target){
-        addLog(v, '接収を試みたが、対象のデータを取得できなかった。');
-      }else if((Date.now() - lastActiveAt(target)) <= ABANDON_MS){
-        addLog(v, `${dispNameRaw(v,target)}は既に活動を再開していたため、接収できなかった。`);
-        target = null;
-      }else{
-        const gained = (target.territory || []).length;
-        const gotGold = target.gold || 0;
-        v.territory = v.territory || [];
-        const owned = new Set(v.territory.map(t=>t.x+','+t.y));
-        for(const t of (target.territory||[])){
-          const key = t.x+','+t.y;
-          if(!owned.has(key)){ v.territory.push(t); owned.add(key); }
-        }
-        v.gold += gotGold;
-        v.stats.reclaimCount = (v.stats.reclaimCount||0) + 1;
-        addLog(v, `荒廃した${dispNameRaw(v,target)}を接収し、${gained}マスの領土と資金${gotGold}を得た。`, 'g');
-        await storage.delete('koku:'+target.id, true);
-        target = null; // 削除済みなので、この後の通常保存の対象からは外す
+      let t = null;
+      if(targetId){
+        try{ t = await fetchVillage(targetId); }
+        catch(e){ console.warn('reclaim: could not read target', targetId, e); }
       }
+      if(!t){
+        plan.steps.push(selfStep((f)=>{ say(f, '接収を試みたが、対象のデータを取得できなかった。'); }));
+      }else if((Date.now() - lastActiveAt(t)) <= ABANDON_MS){
+        plan.steps.push(selfStep((f)=>{ say(f, `${dispNameRaw(f,t)}は既に活動を再開していたため、接収できなかった。`); }));
+      }else{
+        // ① 削除の直前にもう一度読み直し、まだ廃墟のままなら削除する（読み直した内容を接収の元データにする）
+        plan.steps.push(async ()=>{
+          let cur;
+          try{ cur = await fetchVillage(t.id); }
+          catch(e){ console.warn('reclaim: could not re-read target', t.id, e); return false; }
+          if(!cur){ plan.reclaimResult = 'gone'; return true; }
+          if((Date.now() - lastActiveAt(cur)) <= ABANDON_MS){ plan.reclaimResult = 'active'; return true; }
+          if(!(await deleteVillage(cur.id))) return false;
+          plan.snap = cur;
+          plan.reclaimResult = 'ok';
+          return true;
+        });
+        // ② 自国に領土と資金を足す（領土の重複判定は従来どおり）
+        plan.steps.push(selfStep((f)=>{
+          f.stats = f.stats || {};
+          if(plan.reclaimResult === 'gone'){
+            say(f, `${dispNameRaw(f,t)}は、すでに他の誰かに接収されていた。`);
+            return;
+          }
+          if(plan.reclaimResult === 'active'){
+            say(f, `${dispNameRaw(f,t)}は既に活動を再開していたため、接収できなかった。`);
+            return;
+          }
+          const snap = plan.snap;
+          const gained = (snap.territory || []).length;
+          const gotGold = snap.gold || 0;
+          f.territory = f.territory || [];
+          const owned = new Set(f.territory.map(tt=>tt.x+','+tt.y));
+          for(const tile of (snap.territory||[])){
+            const key = tile.x+','+tile.y;
+            if(!owned.has(key)){ f.territory.push(tile); owned.add(key); }
+          }
+          f.gold += gotGold;
+          f.stats.reclaimCount = (f.stats.reclaimCount||0) + 1;
+          say(f, `荒廃した${dispNameRaw(f,snap)}を接収し、${gained}マスの領土と資金${gotGold}を得た。`, 'g');
+        }));
+      }
+
+    }else{
+      return { text:'その行動は実行できません。', cls:'r', village: me };
     }
 
-    v.lastActionAt = Date.now();
-    await attemptSaveAction(v, target);
-  }
-
-  // 行動結果の保存（失敗時は勝手に「保存できた」ことにせず、リトライさせる）
-  async function attemptSaveAction(v, target){
-    let saveOk = await saveVillage(v);
-    if(saveOk && target){ saveOk = await saveVillage(target); }
-    if(!saveOk){
-      appEl.innerHTML = `
-        <div class="panel">
-          <div class="panel-head">▼ エラー</div>
-          <div class="panel-body">
-            <div class="msgbox r">結果の保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。</div>
-            <button class="retro-btn" id="retrySaveBtn" style="margin-top:8px;">もう一度保存する</button>
-          </div>
-        </div>`;
-      document.getElementById('retrySaveBtn').addEventListener('click', ()=>{
-        appEl.innerHTML = '<div class="loading">再保存中…</div>';
-        attemptSaveAction(v, target);
-      });
-      return;
-    }
-    await renderGame();
+    return await execPlan(plan, 0);
   }
 
   async function init(){
@@ -1473,12 +1858,8 @@
       try{
         const v = await fetchVillage(currentId);
         if(v){
-          v.log = v.log || [];
-          state.village = v;
           await addMyId(currentId); // 一覧への登録漏れがあれば自己修復しておく
-          await ensureTerritory(v);
-          await checkDailyBonus(v);
-          await renderGame();
+          await enterGame(v);
         }else{
           // idはあるがデータが本当に見つからない場合のみ、明示的な確認を出す
           await renderDataMissing(currentId);
