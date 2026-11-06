@@ -159,6 +159,8 @@
     line-height:1.7;
     color:#345;
   }
+  /* 直近の行動結果（行動パネルの最上部）。.g/.r の色が効くよう、枠は実線で目立たせるだけにする */
+  .msgbox.result-box{ border-style:solid; font-weight:bold; font-size:13px; }
 
   .loglist{ font-size:12px; line-height:1.9; }
   .loglist .row{ border-bottom:1px dotted var(--line); padding:3px 0; }
