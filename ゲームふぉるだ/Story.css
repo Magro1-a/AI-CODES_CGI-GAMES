@@ -1,6 +1,6 @@
 :root, html[data-theme="dark"]{
-  --paper:#f1e9d8;        /* 本文の文字色（暗背景に映える生成り色） */
-  --ink-faint:#a89b85;    /* 補足テキスト。暗背景でも読めるよう明るめに調整 */
+  --paper:#f1e9d8;        /* 本文の文字色 */
+  --ink-faint:#a89b85;    /* 補足テキスト */
   --seal:#7a2228;
   --seal-light:#9c3339;
   --gold:#a6893f;
@@ -15,7 +15,7 @@
 }
 
 html[data-theme="light"]{
-  --paper:#2a2420;        /* 本文の文字色（明背景では濃い墨色） */
+  --paper:#2a2420;        /* 本文の文字色 */
   --ink-faint:#5c5347;
   --seal:#7a2228;
   --seal-light:#9c3339;
