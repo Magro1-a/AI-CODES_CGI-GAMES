@@ -5,7 +5,7 @@
   // ---------------------------------------------------------------------
   //   'auto'      : 常に解放済み（第1章など）
   //   'score'     : ゲーム側の国力(score)がしきい値以上で自動解放
-  //   'passphrase': 文字列を入力して照合する（現時点では平文比較のダミー。）
+  //   'passphrase': 文字列を入力して照合する
   // =====================================================================
   const STORY = {
     title: '灯火異聞',
@@ -79,8 +79,7 @@
     ]
   };
 
-  // 読む順の一本道リスト（Act跨ぎもこの並び順のまま連結）。
-  // 「前の章」を判定するために使う。
+  // 読む順の一本道リスト(Act跨ぎもこの並び順のまま連結)。「前の章」を判定するために使う。
   const FLAT_CHAPTERS = [];
   STORY.acts.forEach(act => {
     act.chapters.forEach(ch => FLAT_CHAPTERS.push(ch));
@@ -92,12 +91,9 @@
 
   // =====================================================================
   // 進行状況の保存（読了フラグ・解放済みフラグ）
-  // ゲーム側と同じ storage アダプタ方式。window.storage が無ければ
-  // localStorage で代用する（story専用の名前空間を切る）。
+  // ゲーム側と同じ storage アダプタ方式。window.storage が無ければlocalStorage で代用する（story専用の名前空間を切る）。
   // =====================================================================
-  // 本編（Script.js）のローカルフォールバックと同じ名前空間・キー形式を使う。
-  // こうしておくことで、window.storageが無い環境（.htmlを直接開いた場合）でも
-  // 本編側が保存した国データ（koku-my-id / koku:id など）をそのまま読める。
+  // 本編（Script.js）のローカルフォールバックと同じ名前空間・キー形式を使う。こうしておくことで、window.storageが無い環境（.htmlを直接開いた場合）でも本編側が保存した国データ（koku-my-id / koku:id など）をそのまま読める。
   let isLocalMode = false;
   const storage = (function(){
     if(window.storage && typeof window.storage.get === 'function'){
@@ -138,9 +134,9 @@
     try{ await storage.set(PROGRESS_KEY, JSON.stringify(progress), false); }catch(e){}
   }
 
-  // =====================================================================
+  // ====================================================
   // 表示設定（テーマ・文字サイズ）
-  // =====================================================================
+  // ====================================================
   const THEME_KEY = 'story_theme_v1';
   const FONTSIZE_KEY = 'story_fontsize_v1';
   const FONT_SIZES = ['sm','md','lg','xl'];
@@ -208,8 +204,7 @@
 
   // =====================================================================
   // ゲーム側データとの連携（国力しきい値のダミー判定に使う）
-  // ゲームのプレイヤー国データを読む。取得できない場合はscore=0扱いにして、
-  // score系の章はすべてロックされたままになる（安全側に倒す）。
+  // ゲームのプレイヤー国データを読む。取得できない場合はscore=0扱いにして、score系の章はすべてロックされたままになる（安全側に倒す）。
   // =====================================================================
   let cachedScore = 0;
   async function loadPlayerScore(){
@@ -242,14 +237,13 @@
 
   function isUnlocked(chapter){
     if(progress.unlocked[chapter.id]) return true;
-    if(!sequenceSatisfied(chapter)) return false; // 前の章を読破していなければ問答無用でロック
+    if(!sequenceSatisfied(chapter)) return false; // 前の章を読破していなければロック
     if(chapter.unlock.type === 'auto') return true;
     if(chapter.unlock.type === 'score') return cachedScore >= chapter.unlock.value;
     return false; // passphrase等は明示的な解放操作が必要
   }
 
-  // crypto.subtleはfile://で直接開いた場合にブラウザによって使えないことがあるため、
-  // 依存しない軽量な純JS SHA-256実装を使う。
+  // crypto.subtleはfile://で直接開いた場合にブラウザによって使えないことがあるため、依存しない軽量な純JS SHA-256実装を使う。
   function sha256Hex(str){
     function rrot(x,n){ return (x>>>n)|(x<<(32-n)); }
     const K = [
