@@ -74,6 +74,15 @@
             sections: [
               { text: '（未執筆）' }
             ]
+          },
+          {
+            id: 'a2c2',
+            num: '第二章',
+            title: '（仮題・未執筆）',
+            unlock: { type: 'passphrase', cipherHash: 'a4f248ac87f5acefd12488379040288f33e194c41ebcf268c59fb4241c752a38', hint: 'YMF LFHY YTBQU. GRA QTF KRTYMG RS CRUIBLO YMBC VBEMFT. "TFXFUUBRL" "TFIRUAYBRL" "BLCATTFVYBRL" "WABFY" "VRDEQLG" "YTFDRT" "QEETRQVM" "MBFTQTVM". VRDXBLF YMF UFYYFTC RS YMFCF KRTZC.' },
+            sections: [
+              { text: '（未執筆）' }
+            ]
           }
         ]
       }
