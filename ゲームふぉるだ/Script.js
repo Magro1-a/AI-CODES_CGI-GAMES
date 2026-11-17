@@ -68,6 +68,7 @@
   const DEV_FREE_TILES = 2;
   const DEV_COST_PER_TILE = 1;
   let selectedFoundTile = null; // 建国画面で選択中の座標
+  let foundingBusy = false; // 建国処理の実行中フラグ（二重送信で submitFounding が重なって落ちるのを防ぐ）
   let deviceKiribanHit = false; // この端末でキリ番の瞬間に立ち会ったことがあるか（実績表示用）
 
   // ---------- storage adapter ----------
@@ -683,6 +684,11 @@
     if(!fresh) return { ok:false, reason:'missing' };
     fresh.log = fresh.log || [];
     if(mutate(fresh) === false) return { ok:true, skipped:true, village:fresh };
+    // ★バグ修正：以前は recordScoreHistory が建国時とログインボーナス時にしか呼ばれて
+    // いなかったため、行動で国力が変わっても「国力の推移」と歴代最高(maxScore)が
+    // 翌日のログインまで古いままだった。記録の保存はすべてここを通るので、
+    // 変更が確定したこの時点でまとめて記録する（同日分は上書きされるだけなので冪等）。
+    recordScoreHistory(fresh);
     const saved = await saveVillage(fresh);
     return saved ? { ok:true, village:fresh } : { ok:false, reason:'write' };
   }
@@ -855,10 +861,22 @@
     const res = await updateVillage(v.id, (f)=>{
       let changed = false;
       if(tile && applyTerritoryMigration(f, tile)) changed = true;
+      // ★バグ修正：領土はあるのに capital だけ無い古い記録だと、拠点座標が「－」に
+      // なり世界地図の「自分の場所へ」も出なかった（地図側は territory[0] で代用
+      // しているのに表示側だけ capital 直読みだった）。ここで補完しておく。
+      if(!tile && f.territory && f.territory.length > 0 && !f.capital){
+        f.capital = f.territory[0];
+        changed = true;
+      }
       bonusText = applyDailyBonus(f);
       if(bonusText) changed = true;
       return changed; // 何も変わらなければ false → 保存しない
     });
+    if(!res.ok && res.reason === 'missing'){
+      // 国のデータそのものが消えている（廃墟として接収された等）。通信エラーとは
+      // 区別して呼び出し元に返し、「データが見つからない」画面へ進めるようにする。
+      return { missing:true, village: v, bonusText: null, notice: null };
+    }
     if(!res.ok){
       return {
         village: v, bonusText: null,
@@ -871,6 +889,10 @@
   // 国を選んでゲーム画面に入る共通処理（ホームの「続ける」・起動時の自動ログイン）
   async function enterGame(v){
     const prep = await prepareVillage(v);
+    if(prep.missing){
+      await renderDataMissing(v.id);
+      return;
+    }
     state.village = prep.village;
     state.village.log = state.village.log || [];
     state.lastResult = prep.notice ? { text: prep.notice, cls: 'r' }
@@ -925,17 +947,26 @@
         : '<div class="row">まだ書き込みがありません。最初の一言をどうぞ。</div>';
     }
     await refresh();
-    document.getElementById('boardPostBtn').addEventListener('click', async ()=>{
+    document.getElementById('boardPostBtn').addEventListener('click', async (e)=>{
+      const postBtn = e.currentTarget;
+      // ★バグ修正：以前はダブルクリックで同じ内容が2件投稿されていた
+      // （1回目の保存が終わる前に入力欄がまだ残っていて、2回目も同じ文を送っていた）。
+      if(postBtn.disabled) return;
       const input = document.getElementById('boardInput');
       const errEl = document.getElementById('boardError');
       const text = input.value.trim();
       errEl.textContent = '';
       if(!text){ errEl.textContent = 'ひとことを入力してください。'; return; }
       if(isInappropriateName(text)){ errEl.textContent = 'その内容は書き込めません。'; return; }
-      const ok = await postBoardMessage(authorName, text);
-      if(!ok){ errEl.textContent = '書き込みに失敗しました。もう一度お試しください。'; return; }
-      input.value = '';
-      await refresh();
+      postBtn.disabled = true;
+      try{
+        const ok = await postBoardMessage(authorName, text);
+        if(!ok){ errEl.textContent = '書き込みに失敗しました。もう一度お試しください。'; return; }
+        input.value = '';
+        await refresh();
+      }finally{
+        postBtn.disabled = false;
+      }
     });
   }
 
@@ -985,6 +1016,7 @@
   async function renderFoundingForm(){
     clearCooldownTimer();
     selectedFoundTile = null;
+    foundingBusy = false; // フォームを作り直したら建国ガードも解除する
     const ids = await getMyIds();
     appEl.innerHTML = '<div class="loading">地図を読み込み中…</div>';
     const allVillages = await listAllVillages();
@@ -1048,8 +1080,13 @@
   }
 
   async function submitFounding(){
+    // ★バグ修正：以前はダブルクリックやEnter連打で submitFounding が2重に走り、
+    // 1回目が selectedFoundTile を null にしたあとで2回目が再開して
+    // 「Cannot read properties of null」で落ちていた。実行中は入り直さない。
+    if(foundingBusy) return;
     const nameInput = document.getElementById('nameInput');
     const errorEl = document.getElementById('foundError');
+    if(!nameInput || !errorEl) return; // 画面が既に切り替わっている場合
     errorEl.textContent = '';
     const name = nameInput.value.trim().slice(0,10);
     if(!name){
@@ -1064,11 +1101,18 @@
       errorEl.textContent = '地図から建国したい場所を選んでください。';
       return;
     }
+    foundingBusy = true; // ここから先は非同期処理に入るので二重送信を止める
+    const submitBtn = document.getElementById('foundSubmitBtn');
+    if(submitBtn) submitBtn.disabled = true;
     // 建国直前にもう一度だけ空きを確認する（選んでいる間に他の人が先に建国した可能性があるため）
     const freshVillages = await listAllVillages({ force:true }); // キャッシュではなく最新を確認する
-    if(!isTileFree(selectedFoundTile.x, selectedFoundTile.y, freshVillages, null)){
-      errorEl.textContent = 'その場所はたった今、他の誰かが使ったようです。地図を選び直してください。';
+    if(!selectedFoundTile || !isTileFree(selectedFoundTile.x, selectedFoundTile.y, freshVillages, null)){
+      // ★バグ修正：以前は再描画の前に errorEl へ書いていたため、フォームを
+      // 作り直した瞬間にメッセージごと消えてしまい、理由が何も表示されなかった。
+      // 先に作り直してから、新しいフォームのエラー欄に表示する。
       await renderFoundingForm();
+      const err2 = document.getElementById('foundError');
+      if(err2) err2.textContent = 'その場所はたった今、他の誰かが使ったようです。地図を選び直してください。';
       return;
     }
     const id = 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -1452,12 +1496,22 @@
     state.allVillages = await listAllVillages();
     // 他のプレイヤーの侵攻・偵察で自国の記録が書き換わっていることがあるので、最新を取り直す。
     // 取得に失敗したときは手元の値のまま表示する。
+    let latest;
     try{
-      const latest = await fetchVillage(state.village.id);
-      if(latest){ latest.log = latest.log || []; state.village = latest; }
+      latest = await fetchVillage(state.village.id);
     }catch(e){
       console.warn('renderGame: could not refresh own record', e);
     }
+    // ★バグ修正：自国の記録が本当に無くなっていた場合（廃墟として接収された等）も
+    // 以前は「取得できなかった」扱いで手元の古いデータのままゲーム画面を出し続け、
+    // 行動しても保存に失敗し続けるだけだった。存在しないことが確定したら
+    // 「データが見つからない」画面へ切り替える（通信エラーで消えたことにしない
+    // ため、例外のときは従来どおり手元の値で表示する）。
+    if(latest === null){
+      await renderDataMissing(state.village.id);
+      return;
+    }
+    if(latest){ latest.log = latest.log || []; state.village = latest; }
     if(!hasShell){
       appEl.innerHTML = gameShellHtml();
       bindGameShell();
@@ -1802,13 +1856,16 @@
             return;
           }
           const snap = plan.snap;
-          const gained = (snap.territory || []).length;
           const gotGold = snap.gold || 0;
           f.territory = f.territory || [];
           const owned = new Set(f.territory.map(tt=>tt.x+','+tt.y));
+          // ★バグ修正：以前は相手の領土数をそのまま「得たマス数」と表示していたため、
+          // 自国と重なっているマス（追加されない分）まで数えてしまい、実際に増えた
+          // マス数と食い違っていた。実際に追加できたマスだけを数える。
+          let gained = 0;
           for(const tile of (snap.territory||[])){
             const key = tile.x+','+tile.y;
-            if(!owned.has(key)){ f.territory.push(tile); owned.add(key); }
+            if(!owned.has(key)){ f.territory.push(tile); owned.add(key); gained++; }
           }
           f.gold += gotGold;
           f.stats.reclaimCount = (f.stats.reclaimCount||0) + 1;

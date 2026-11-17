@@ -526,7 +526,10 @@
 
     const submitBtn = overlay.querySelector('#unlockSubmit');
     if(submitBtn){
+      let submitting = false; // 二重送信ガード（Enter連打・ダブルクリック対策）
       const doSubmit = async ()=>{
+        if(submitting) return;
+        submitting = true;
         const input = overlay.querySelector('#unlockInput');
         const msg = overlay.querySelector('#unlockMsg');
         if(tryPassphrase(chapter, input.value)){
@@ -538,6 +541,7 @@
         }else{
           msg.textContent = 'その言葉では封は解けない。';
           msg.className = 'unlock-msg err';
+          submitting = false; // 失敗時は再入力できるようガードを戻す（成功時は画面遷移するので戻さない）
         }
       };
       submitBtn.addEventListener('click', doSubmit);
